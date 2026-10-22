@@ -247,6 +247,55 @@ def list_models(project):
     return out
 
 
+def latest_model(project):
+    models = list_models(project)
+    return models[0] if models else None
+
+
+def samples_since_model(project, model=None):
+    """Dataset samples added (or changed) since the model was trained: what a retrain would add."""
+    model = model or latest_model(project)
+    root = dataset_root(project, "rgb")
+    times = {}
+    for f in root.glob("labels/*/*.txt"):
+        sid = f.stem.split("__t")[0]
+        times[sid] = max(times.get(sid, 0), f.stat().st_mtime)
+    if model is None:
+        return len(times)
+    t_model = model["path"].stat().st_mtime
+    return sum(1 for t in times.values() if t > t_model)
+
+
+def import_model(project, weights, name=None):
+    """Copy a trained model (best.pt, ideally from a SeedLabeler run folder) into this crop's models.
+
+    The run's seedlabeler.json (input kind, tiling) is copied too when present;
+    otherwise colour input with this project's tiling is assumed.
+    """
+    import shutil
+    import time
+
+    weights = Path(weights)
+    run_meta = weights.parent.parent / "seedlabeler.json"
+    name = name or f"imported_{time.strftime('%Y%m%d_%H%M%S')}"
+    run = project.models_dir / name
+    (run / "weights").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(weights, run / "weights" / "best.pt")
+    if (weights.parent.parent / "results.csv").exists():
+        shutil.copy2(weights.parent.parent / "results.csv", run / "results.csv")
+    if run_meta.exists():
+        meta = json.loads(run_meta.read_text())
+        assumed = False
+    else:
+        work_res, overlap = tiling(project.config.settings.seed_width)
+        meta = {"input": "rgb", "imgsz": TILE, "height_scale_mm": project.config.settings.seed_width,
+                "work_res_mm": work_res, "tile": TILE, "overlap": overlap}
+        assumed = True
+    meta["imported_from"] = str(weights)
+    (run / "seedlabeler.json").write_text(json.dumps(meta, indent=2))
+    return run / "weights" / "best.pt", assumed
+
+
 def train_command(project, run_name, epochs=150, imgsz=TILE, base=None, kind="rgb"):
     """argv for the training subprocess."""
     data = write_data_yaml(project, kind)

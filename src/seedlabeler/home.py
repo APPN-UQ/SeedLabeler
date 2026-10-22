@@ -171,16 +171,17 @@ class NewProjectDialog(QDialog):
 
 # --------------------------------------------------------------------------- hub
 STEPS = [
-    ("LABEL", "Capture and correct the first samples. Each corrected sample teaches the model."),
-    ("TRAIN", "Train a model for this crop on your corrected samples."),
-    ("CAPTURE", "Collect the rest quickly: scan, capture, next. No detection while you work."),
+    ("LABEL", "Capture and correct samples. Once there is a model, it does the first draft and you correct it."),
+    ("TRAIN", "Train the crop's model, then retrain as you add corrected samples: each round starts from the "
+              "last model and learns from the whole dataset."),
+    ("CAPTURE", "Collect the rest quickly: scan, capture, next. Unlocks once the crop has a model."),
     ("PROCESS", "Detect every captured sample in one batch, check the flagged ones, export traits."),
 ]
 MODES = {
     "label": ("LABEL & TRAIN", "Capture, detect with SAM, correct outlines, add to the dataset, train models. "
                                "Slower and deliberate."),
     "capture": ("RAPID CAPTURE", "Barcode-driven collection with live view and instant quality checks. "
-                                 "Built for throughput."),
+                                 "Built for throughput. Needs a trained model."),
     "process": ("PROCESS & EXPORT", "Batch detection of everything captured, flags worth a look, "
                                     "traits CSVs."),
 }
@@ -193,23 +194,28 @@ def workflow_state(project):
     ds_samples, ds_seeds = ml.dataset_summary(project)
     target = project.config.settings.label_target
     models = ml.list_models(project)
-    labels = list(ml.dataset_root(project).glob("labels/*/*.txt"))
-    ds_time = max((f.stat().st_mtime for f in labels), default=0)
-    model_time = models[0]["path"].stat().st_mtime if models else 0
+    model = models[0] if models else None
+    new = ml.samples_since_model(project, model)
+    # retrain once a meaningful share of the dataset is new
+    retrain_due = model is not None and new >= max(5, 0.25 * max(ds_samples, 1))
 
-    done1 = ds_samples >= target
-    done2 = bool(models) and model_time >= ds_time
+    done1 = ds_samples >= target or model is not None
+    done2 = model is not None and not retrain_due
+    if model is None:
+        train_text = "no model yet" + (f" · ready to train on {ds_samples} samples" if done1 else "")
+    else:
+        score = f" · mask mAP50 {model['mask_map50']:.2f}" if model.get("mask_map50") is not None else ""
+        train_text = f"{model['name']}{score} · {new} sample(s) added since" + (" · retrain" if retrain_due else "")
     texts = [
-        f"{ds_samples} / {target} samples · {ds_seeds} seeds in the dataset",
-        ("no model yet" if not models else
-         f"{models[0]['name']} · mask mAP50 {models[0]['mask_map50'] or 0:.2f}"
-         + ("" if done2 else " · dataset has grown since: retrain")),
-        f"{len(samples)} captured",
+        f"{ds_samples} / {target} samples · {ds_seeds} seeds in the dataset" if model is None
+        else f"{ds_samples} samples · {ds_seeds} seeds in the dataset",
+        train_text,
+        f"{len(samples)} captured" if model is not None else "locked until there is a model",
         f"{waiting} waiting to be processed" if waiting else "everything processed",
     ]
-    if not done1:
-        nxt = 0
-    elif not done2:
+    if model is None:
+        nxt = 1 if done1 else 0
+    elif retrain_due:
         nxt = 1
     elif waiting:
         nxt = 3
@@ -219,7 +225,8 @@ def workflow_state(project):
     states[nxt] = "next"
     mode = {0: "label", 1: "label", 2: "capture", 3: "process"}[nxt]
     return list(zip(states, texts)), mode, {"samples": len(samples), "waiting": waiting, "ds_samples": ds_samples,
-                                            "ds_seeds": ds_seeds, "models": len(models)}
+                                            "ds_seeds": ds_seeds, "models": len(models), "has_model": model is not None,
+                                            "new_since_model": new}
 
 
 class StepWidget(QFrame):
@@ -266,6 +273,7 @@ class HubPage(QWidget):
     goMode = Signal(str)
     editSettings = Signal()
     train = Signal()
+    loadModel = Signal()
 
     def __init__(self):
         super().__init__()
@@ -281,6 +289,8 @@ class HubPage(QWidget):
         col.addWidget(self.title)
         col.addWidget(self.sub)
         head.addLayout(col, 1)
+        head.addWidget(button("load model", self.loadModel.emit, secondary=True,
+                              tip="Use a model trained elsewhere (e.g. another project with the same crop)"))
         head.addWidget(button("settings", self.editSettings.emit, secondary=True))
         v.addLayout(head)
 
@@ -349,6 +359,10 @@ class HubPage(QWidget):
         for k, lab in self.stat_labels.items():
             lab.setText(str(stats[k]))
         self.b_train.setVisible(steps[1][0] == "next")
+        self.b_train.setText("RETRAIN NOW" if stats["has_model"] else "TRAIN NOW")
+        self.tiles["capture"].setEnabled(stats["has_model"])
+        self.tiles["capture"].setToolTip("" if stats["has_model"] else
+                                         "Train a model in LABEL (or LOAD MODEL) to unlock rapid capture.")
         for k, b in self.tiles.items():
             b.setProperty("recommended", "true" if k == mode else "false")
             b.style().unpolish(b)

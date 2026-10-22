@@ -14,7 +14,7 @@ from seedlabeler import processing  # noqa: E402
 from seedlabeler.canvas import Canvas  # noqa: E402
 from seedlabeler.project import Project  # noqa: E402
 
-from test_workflow import CALIB, _pair  # noqa: E402
+from test_workflow import CALIB, CODE, _pair  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -159,4 +159,51 @@ def test_hub_workflow_and_batch_process(app, tmp_path):
     ml.add_to_dataset(p, p.samples()[0])
     steps, mode, _ = workflow_state(p)
     assert steps[0][0] == "done" and steps[1][0] == "next"  # labelled enough: train next
+    shell.close()
+
+
+def test_capture_locked_until_model_and_retrain_counter(app, tmp_path):
+    """CAPTURE stays locked without a model; LOAD MODEL unlocks it and makes it the detector."""
+    from seedlabeler import ml
+    from seedlabeler.home import workflow_state
+    from seedlabeler.shell import Shell
+
+    demo_model = CODE / "SeedLabeler" / "projects" / "almond_demo" / "models" / "almond" / "rgbh_tiles" / "weights" / "best.pt"
+    if not demo_model.exists():
+        pytest.skip("demo model not available")
+    left, right = _pair()
+    p = Project.create(tmp_path / "proj", "t", crop="almond", calib=str(CALIB))
+    s = p.add_pair(left, right, "a1")
+    processing.detect(p, s)
+    ml.add_to_dataset(p, s)
+    shell = Shell()
+    shell.open_project(p.root)
+    shell.go("capture")
+    assert shell.current != "capture" and not shell.tabs["capture"].isEnabled()
+
+    weights, assumed = ml.import_model(p, demo_model)
+    assert not assumed  # the run's settings (input, tiling) came along
+    shell.use_model(weights)
+    shell.models_changed()
+    assert shell.tabs["capture"].isEnabled()
+    shell.go("capture")
+    assert shell.current == "capture"
+    shell.go("hub")
+    assert shell.project.config.detector.endswith("weights/best.pt")  # the app's project, saved to disk
+    assert Project.open(p.root).config.detector == shell.project.config.detector
+    # an imported model has never seen this project's samples: all of them count as new
+    assert ml.samples_since_model(p) == 1
+    import os, time
+    past = time.time() - 3600  # pretend the samples were added before the model was trained
+    for f in ml.dataset_root(p).glob("labels/*/*.txt"):
+        os.utime(f, (past, past))
+    model_file = ml.latest_model(p)["path"]
+    os.utime(model_file, (time.time(), time.time()))
+    assert ml.samples_since_model(p) == 0
+    future = time.time() + 60  # then one is corrected after training
+    f0 = next(ml.dataset_root(p).glob("labels/*/*.txt"))
+    os.utime(f0, (future, future))
+    assert ml.samples_since_model(p) == 1
+    steps, _, stats = workflow_state(p)
+    assert stats["has_model"] and stats["new_since_model"] == 1
     shell.close()

@@ -667,9 +667,7 @@ class LabelPage(QWidget):
         c = ml.dataset_counts(self.project)
         if c["train"][0] == 0:
             return self.shell.error("The dataset for this crop is empty. Correct samples and ADD TO DATASET first.")
-        TrainDialog(self.shell).exec()
-        self._refresh_models()
-        self._update_model_readout()
+        self.shell.train()
 
 
 class SettingsDialog(QDialog):
@@ -783,18 +781,27 @@ class TrainDialog(QDialog):
         form = QFormLayout()
         self.epochs = QSpinBox()
         self.epochs.setRange(1, 1000)
-        self.epochs.setValue(150)
+        latest = ml.latest_model(self.project)
+        self.epochs.setValue(150 if latest is None else 80)
         self.imgsz = QComboBox()
         self.imgsz.addItems(["640", "960"])  # dataset tiles are 640 px
         self.base = QComboBox()
-        self.base.addItem(f"Pretrained  {ml.BASE_MODEL}", ml.BASE_MODEL)
-        self.base.addItem("Pretrained  yolo11n-seg.pt (faster)", "yolo11n-seg.pt")
+        # Once there is a model, improve it: continue from its weights on the whole dataset
+        # (old + new samples), so it keeps what it learned and adds the new examples.
         for m in ml.list_models(self.project):
-            self.base.addItem(f"Continue  {m['name']}", str(m["path"]))
+            self.base.addItem(f"Improve  {m['name']}  (continue training)", str(m["path"]))
+        self.base.addItem(f"Start fresh  {ml.BASE_MODEL}", ml.BASE_MODEL)
+        self.base.addItem("Start fresh  yolo11n-seg.pt (faster)", "yolo11n-seg.pt")
+        self.base.currentIndexChanged.connect(
+            lambda _i: self.epochs.setValue(150 if self.base.currentData() in (ml.BASE_MODEL, "yolo11n-seg.pt") else 80))
+        if latest is not None and latest.get("input"):
+            self.input_default = latest["input"]
+        else:
+            self.input_default = "rgbh"
         self.input = QComboBox()
         for k, val in ml.INPUTS.items():
             self.input.addItem(val.title(), k)
-        self.input.setCurrentIndex(1)
+        self.input.setCurrentIndex(max(0, self.input.findData(self.input_default)))
         self.input.setToolTip("Colour + height also shows the model each pixel's height above the stage,\n"
                               "so it can tell seeds from shadows and stains of the same colour.")
         self.name = QLineEdit(time.strftime("run_%Y%m%d_%H%M%S"))
@@ -826,10 +833,16 @@ class TrainDialog(QDialog):
                                 int(self.imgsz.currentText()), self.base.currentData(), kind)
         self.log.appendPlainText(" ".join(argv[1:]) + "\n")
 
+        run_name = self.name.text().strip()
+
         def ok():
-            self.log.appendPlainText("\nDone. The model is now available as a detector.")
+            weights = self.project.models_dir / run_name / "weights" / "best.pt"
+            if weights.exists():
+                self.shell.use_model(weights)  # new detections start from the improved model
+            self.log.appendPlainText(f"\nDone. {run_name} is now the detector: detect new samples with it, "
+                                     "correct them, add them to the dataset and retrain to keep improving it.")
             self.b_start.setEnabled(True)
-            self.shell.say(f"trained {self.name.text()}")
+            self.shell.say(f"trained {run_name}; it is now the detector")
 
         def log(text):
             for line in text.replace("\r\n", "\n").split("\n"):

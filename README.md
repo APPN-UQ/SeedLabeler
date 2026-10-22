@@ -32,8 +32,15 @@ samples and seeds, models), the **suggested workflow** with the next step
 highlighted, and the three modes. Switch modes any time from the top bar.
 
 1. **LABEL**: capture and correct the first ~20 samples (target in SETTINGS).
-2. **TRAIN**: train a model for the crop on them (TRAIN NOW appears on the hub).
-3. **CAPTURE**: collect the rest quickly, no detection while working.
+2. **TRAIN**: train the crop's model on them. The new model becomes the detector,
+   so the next samples you label start from its predictions. Keep going: correct
+   another batch, add it to the dataset, **RETRAIN** (default: continue from the
+   latest model, on the whole dataset, so it keeps what it learned). The hub
+   counts samples added since the last training and suggests RETRAIN NOW once
+   5 (or a quarter of the dataset) are new.
+3. **CAPTURE**: collect the rest quickly, no detection while working. Locked
+   until the crop has a model: train one, or **LOAD MODEL** on the hub (e.g.
+   best.pt from another project's run folder; its settings come with it).
 4. **PROCESS**: batch-detect everything captured, check flagged samples, export.
 
 | Mode | For | |

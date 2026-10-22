@@ -4,9 +4,10 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
+                               QVBoxLayout, QWidget)
 
-from . import style
+from . import ml, style
 from .camera import CameraService
 from .capture_page import CapturePage
 from .home import HomePage, HubPage, remember_project
@@ -93,14 +94,22 @@ class Shell(QMainWindow):
         self.hub.goMode.connect(self.go)
         self.hub.editSettings.connect(self.edit_settings)
         self.hub.train.connect(self.train)
+        self.hub.loadModel.connect(self.load_model)
         self.process.openInLabel.connect(self.open_in_label)
         self.current = None
         self.go_home()
 
     # ------------------------------------------------------------ navigation
+    def has_model(self):
+        return self.project is not None and ml.latest_model(self.project) is not None
+
     def go(self, key):
         if key != "home" and self.project is None:
             return
+        if key == "capture" and not self.has_model():
+            self.tabs["capture"].setChecked(False)
+            return self.say("Rapid capture unlocks once this crop has a model: train one in LABEL or LOAD MODEL "
+                            "on the hub.")
         if self.current and hasattr(self.pages[self.current], "leave"):
             self.pages[self.current].leave()
         self.current = key
@@ -110,6 +119,8 @@ class Shell(QMainWindow):
         for k, b in self.tabs.items():
             b.setChecked(k == key)
             b.setVisible(self.project is not None)
+        self.tabs["capture"].setEnabled(self.has_model())
+        self.tabs["capture"].setToolTip("" if self.has_model() else "Needs a trained model for this crop")
         self.b_settings.setVisible(self.project is not None)
         self.b_close.setVisible(self.project is not None)
 
@@ -154,8 +165,31 @@ class Shell(QMainWindow):
 
     def train(self):
         TrainDialog(self).exec()
-        self.label.set_project(self.project)
+        self.models_changed()
+
+    def models_changed(self):
+        """After training or loading a model: refresh everything that lists models or gates on them."""
+        self.label._refresh_models()  # keeps the sample being edited
+        self.label._update_model_readout()
+        self.process.refresh()
         self.hub.refresh()
+        self.go(self.current)
+
+    def use_model(self, weights):
+        """Make a model the project's detector, so new detections (and labels) start from it."""
+        self.project.config.detector = Path(weights).relative_to(self.project.root).as_posix()
+        self.project.save()
+
+    def load_model(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Load a trained model (best.pt from a SeedLabeler run folder)",
+                                           str(self.project.root), "Model (*.pt)")
+        if not f:
+            return
+        weights, assumed = ml.import_model(self.project, f)
+        self.use_model(weights)
+        self.models_changed()
+        self.say(f"loaded model {weights.parent.parent.name} and made it the detector"
+                 + (" (no settings found with it: assumed colour input and this project's tiling)" if assumed else ""))
 
     # ------------------------------------------------------------ shared services
     def say(self, msg):
