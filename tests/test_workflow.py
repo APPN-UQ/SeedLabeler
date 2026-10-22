@@ -51,9 +51,14 @@ def test_workflow(tmp_path):
     assert len(processing.labels_to_polygons(labels)) == 18
 
     split = ml.add_to_dataset(p, s)
-    lab = p.dataset_dir / "labels" / split / f"{s.id}.txt"
-    assert lab.exists() and len(lab.read_text().splitlines()) == 18
-    assert (p.dataset_dir / "data.yaml").exists() and s.status() == "dataset"
+    for kind in ml.INPUTS:  # colour and colour+height datasets, as tiles with the same labels
+        labs = list((ml.dataset_root(p, kind) / "labels" / split).glob(f"{s.id}__t*.txt"))
+        imgs = list((ml.dataset_root(p, kind) / "images" / split).glob(f"{s.id}__t*"))
+        assert labs and len(labs) == len(imgs)
+        assert (ml.dataset_root(p, kind) / "data.yaml").exists()
+    counts = ml.dataset_counts(p)[split]
+    assert counts[0] == 1 and counts[2] >= 18  # seeds in tile overlaps count more than once
+    assert s.status() == "dataset"
 
     paths = processing.export_project(p)
     assert len(paths) == 2 and all(x.exists() for x in paths)

@@ -66,9 +66,9 @@ def test_rename_and_delete(tmp_path):
     assert r.id == "QR-000123" and not s.path.exists() and r.processed
     seeds = pd.read_csv(r.seeds_csv)
     assert set(seeds["sample"]) == {"QR-000123"}
-    assert (p.dataset_dir / "labels" / split / "QR-000123.txt").exists()
-    assert not (p.dataset_dir / "labels" / split / "plot_12_A.txt").exists()
+    assert list((p.dataset_dir / "labels" / split).glob("QR-000123__t*.txt"))
+    assert not list((p.dataset_dir / "labels" / split).glob("plot_12_A*"))
 
     p.delete_sample(r)
     assert not r.path.exists() and p.samples() == []
-    assert not (p.dataset_dir / "labels" / split / "QR-000123.txt").exists()
+    assert not list(p.root.glob("datasets/*/labels/*/QR-000123*"))

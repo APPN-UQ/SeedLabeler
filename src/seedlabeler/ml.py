@@ -1,7 +1,11 @@
 """Instance-segmentation datasets and models (one of each per crop).
 
 Datasets are in YOLO segmentation format, built from reviewed samples'
-top-down images and corrected polygons. Training runs in a separate process
+top-down images and corrected polygons. Images are resampled to a fixed scale
+(~PX_PER_SEED pixels across the crop's smallest seed) and cut into overlapping
+TILE-pixel tiles, so seeds look the same size to the model whatever the camera
+height, and a few photos give many training examples. Detection tiles the
+image the same way. Training runs in a separate process
 (seedlabeler.train_worker) so the GUI stays responsive. Uses Ultralytics YOLO
 (AGPL-3.0: fine for research use; check before distributing the app).
 """
@@ -17,6 +21,70 @@ import numpy as np
 from .processing import load_layers
 
 BASE_MODEL = "yolo11s-seg.pt"
+INPUTS = {"rgb": "COLOUR", "rgbh": "COLOUR + HEIGHT"}
+TILE = 640
+PX_PER_SEED = 64      # pixels across the smallest seed (project seed width)
+OVERLAP_SEEDS = 2.5   # tile overlap in seed widths: covers a seed's full length
+
+
+def make_input(ortho, height, valid, kind="rgb", height_scale_mm=6.0):
+    """The image a model sees.
+
+    rgb : the top-down colour image.
+    rgbh: three channels packing what separates seeds from everything else:
+          brightness (L*), colour saturation (chroma) and height above the stage
+          (0 at the stage, 255 at height_scale_mm; unknown height -> 0). A shadow
+          has a seed's colour but no height, so the model can learn to ignore it.
+          Three channels keep it compatible with models pretrained on colour images.
+    """
+    if kind == "rgb":
+        img = ortho.copy()
+    else:
+        from chickpea.segment import to_lab
+        lab = to_lab(ortho)
+        L = np.clip(lab[..., 0] * 2.55, 0, 255)
+        C = np.clip(np.hypot(lab[..., 1], lab[..., 2]) * 4.0, 0, 255)
+        H = np.clip(np.nan_to_num(height, nan=0.0) / height_scale_mm * 255.0, 0, 255)
+        img = np.dstack([H, C, L]).astype(np.uint8)  # BGR order on disk: B=height, G=chroma, R=brightness
+    img[~valid] = 0
+    return img
+
+
+def dataset_root(project, kind="rgb"):
+    return project.dataset_dir if kind == "rgb" else project.dataset_dir.with_name(project.config.crop + "-rgbh")
+
+
+# --- tiling ----------------------------------------------------------------
+def tiling(seed_width_mm):
+    """(work resolution mm/px, overlap px) for a crop."""
+    work_res = seed_width_mm / PX_PER_SEED
+    return work_res, int(round(OVERLAP_SEEDS * PX_PER_SEED))
+
+
+def _starts(n, tile, step):
+    if n <= tile:
+        return [0]
+    s = list(range(0, n - tile, step))
+    return s + [n - tile]
+
+
+def tile_grid(shape, overlap):
+    h, w = shape[:2]
+    step = TILE - overlap
+    return [(x, y) for y in _starts(h, TILE, step) for x in _starts(w, TILE, step)]
+
+
+def _crop(img, x, y):
+    t = img[y:y + TILE, x:x + TILE]
+    if t.shape[0] < TILE or t.shape[1] < TILE:  # image smaller than a tile: pad with black
+        pad = np.zeros((TILE, TILE) + img.shape[2:], img.dtype)
+        pad[:t.shape[0], :t.shape[1]] = t
+        t = pad
+    return t
+
+
+def _resample(img, f, interp):
+    return img if f >= 1 else cv2.resize(img, None, fx=f, fy=f, interpolation=interp)
 
 
 # --- dataset ---------------------------------------------------------------
@@ -25,31 +93,68 @@ def _split(sample_id, val_fraction=0.2):
     return "val" if h < val_fraction * 1000 else "train"
 
 
-def add_to_dataset(project, sample):
-    """Write (or refresh) one sample's image and polygons into the crop's dataset."""
+def _sample_files(root, sample_id):
+    """Every dataset file of one sample (whole-image or tiles), any split."""
+    out = []
+    for sub in ("images", "labels"):
+        out += list(root.glob(f"{sub}/*/{sample_id}.*")) + list(root.glob(f"{sub}/*/{sample_id}__t*"))
+    return out
+
+
+def add_to_dataset(project, sample, empty_every=4):
+    """Write (or refresh) one sample into the crop's datasets (colour and colour+height), as tiles."""
     ann = sample.annotations()
-    ortho, _, valid = load_layers(sample)
-    root = project.dataset_dir
+    ortho, height, valid = load_layers(sample)
+    res = sample.meta()["res"]
+    work_res, overlap = tiling(project.config.settings.seed_width)
+    f = res / work_res
+    polys = [np.asarray(s["polygon"], float) * min(f, 1.0) for s in ann["seeds"]]
+    v = _resample(valid.astype(np.uint8), f, cv2.INTER_NEAREST).astype(bool)
     split = _split(sample.id)
-    for other in ("train", "val"):  # a sample lives in exactly one split
-        for sub, ext in (("images", ".jpg"), ("labels", ".txt")):
-            f = root / sub / other / f"{sample.id}{ext}"
-            if f.exists() and other != split:
-                f.unlink()
-    (root / "images" / split).mkdir(parents=True, exist_ok=True)
-    (root / "labels" / split).mkdir(parents=True, exist_ok=True)
-    img = ortho.copy()
-    img[~valid] = 0
-    cv2.imwrite(str(root / "images" / split / f"{sample.id}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-    h, w = ortho.shape[:2]
-    lines = []
-    for s in ann["seeds"]:
-        p = np.asarray(s["polygon"], float)
-        p[:, 0] /= w
-        p[:, 1] /= h
-        lines.append("0 " + " ".join(f"{v:.6f}" for v in p.clip(0, 1).ravel()))
-    (root / "labels" / split / f"{sample.id}.txt").write_text("\n".join(lines))
-    write_data_yaml(project)
+
+    # which tiles, and their labels (shared by both input kinds)
+    tiles = []
+    n_empty = 0
+    for x, y in tile_grid(v.shape, overlap):
+        if _crop(v, x, y).mean() < 0.3:
+            continue  # mostly outside the camera's view
+        lines, has_centre = [], False
+        for p in polys:
+            q = p - [x, y]
+            if q[:, 0].max() < 0 or q[:, 1].max() < 0 or q[:, 0].min() >= TILE or q[:, 1].min() >= TILE:
+                continue
+            m = np.zeros((TILE, TILE), np.uint8)
+            cv2.fillPoly(m, [np.round(q).astype(np.int32)], 1)
+            cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not cs:
+                continue
+            c = max(cs, key=cv2.contourArea)
+            if cv2.contourArea(c) < 30 or len(c) < 3:
+                continue
+            c = c.reshape(-1, 2) / TILE
+            lines.append("0 " + " ".join(f"{val:.6f}" for val in c.clip(0, 1).ravel()))
+            cx, cy = q.mean(axis=0)
+            has_centre |= 0 <= cx < TILE and 0 <= cy < TILE
+        if not has_centre:
+            n_empty += 1
+            if n_empty % empty_every:  # keep some empty tiles as background examples
+                continue
+        tiles.append((x, y, lines))
+
+    for kind, ext, params in (("rgb", ".jpg", [cv2.IMWRITE_JPEG_QUALITY, 95]),
+                              ("rgbh", ".png", [cv2.IMWRITE_PNG_COMPRESSION, 3])):  # PNG: no channel mixing
+        root = dataset_root(project, kind)
+        for old in _sample_files(root, sample.id):
+            old.unlink()
+        (root / "images" / split).mkdir(parents=True, exist_ok=True)
+        (root / "labels" / split).mkdir(parents=True, exist_ok=True)
+        img = _resample(make_input(ortho, height, valid, kind, project.config.settings.seed_width), f,
+                        cv2.INTER_AREA)
+        for x, y, lines in tiles:
+            name = f"{sample.id}__t{x}_{y}"
+            cv2.imwrite(str(root / "images" / split / f"{name}{ext}"), _crop(img, x, y), params)
+            (root / "labels" / split / f"{name}.txt").write_text("\n".join(lines))
+        write_data_yaml(project, kind)
     ann["in_dataset"] = True
     ann["reviewed"] = True
     sample.save_annotations(ann)
@@ -57,27 +162,37 @@ def add_to_dataset(project, sample):
 
 
 def remove_from_dataset(project, sample):
-    for split in ("train", "val"):
-        for sub, ext in (("images", ".jpg"), ("labels", ".txt")):
-            f = project.dataset_dir / sub / split / f"{sample.id}{ext}"
-            if f.exists():
-                f.unlink()
+    for kind in INPUTS:
+        for f in _sample_files(dataset_root(project, kind), sample.id):
+            f.unlink()
     ann = sample.annotations()
     ann["in_dataset"] = False
     sample.save_annotations(ann)
 
 
 def dataset_counts(project):
+    """{split: (samples, tiles, seeds)} for the crop's dataset."""
     out = {}
     for split in ("train", "val"):
         d = project.dataset_dir / "labels" / split
         files = list(d.glob("*.txt")) if d.exists() else []
-        out[split] = (len(files), sum(len(f.read_text().splitlines()) for f in files))
+        samples = {f.stem.split("__t")[0] for f in files}
+        out[split] = (len(samples), len(files), sum(len(f.read_text().splitlines()) for f in files))
     return out
 
 
-def write_data_yaml(project):
-    root = project.dataset_dir
+def sync_datasets(project):
+    """(Re)write every dataset sample in both input formats with the current tiling."""
+    done = 0
+    for s in project.samples():
+        if s.processed and s.annotations().get("in_dataset"):
+            add_to_dataset(project, s)
+            done += 1
+    return done
+
+
+def write_data_yaml(project, kind="rgb"):
+    root = dataset_root(project, kind)
     counts = dataset_counts(project)
     # Ultralytics needs a validation split; until one exists, validate on train
     val = "images/val" if counts["val"][0] else "images/train"
@@ -98,7 +213,8 @@ def list_models(project):
         best = run / "weights" / "best.pt"
         if not best.exists():
             continue
-        info = {"name": run.name, "path": best, "mask_map50_95": None, "mask_map50": None, "epochs": None}
+        info = {"name": run.name, "path": best, "mask_map50_95": None, "mask_map50": None, "epochs": None,
+                "input": "rgb"}
         res = run / "results.csv"
         if res.exists():
             rows = list(csv.DictReader(res.open()))
@@ -115,12 +231,15 @@ def list_models(project):
     return out
 
 
-def train_command(project, run_name, epochs=100, imgsz=1280, base=None):
+def train_command(project, run_name, epochs=150, imgsz=TILE, base=None, kind="rgb"):
     """argv for the training subprocess."""
-    data = write_data_yaml(project)
+    data = write_data_yaml(project, kind)
+    work_res, overlap = tiling(project.config.settings.seed_width)
     return [sys.executable, "-m", "seedlabeler.train_worker",
             "--data", str(data), "--project", str(project.models_dir), "--name", run_name,
-            "--epochs", str(epochs), "--imgsz", str(imgsz), "--base", str(base or BASE_MODEL)]
+            "--epochs", str(epochs), "--imgsz", str(imgsz), "--base", str(base or BASE_MODEL),
+            "--input", kind, "--height-scale", str(project.config.settings.seed_width),
+            "--work-res", f"{work_res:.6f}", "--tile", str(TILE), "--overlap", str(overlap)]
 
 
 _loaded = {}
@@ -129,13 +248,19 @@ _loaded = {}
 def model_detector(model_path, conf=0.35, imgsz=None):
     """Detector callable for chickpea.pipeline.measure_pair using a trained model.
 
-    imgsz defaults to the size the model was trained at (recorded by train_worker).
+    Rebuilds exactly the input the model was trained on (kind, scale, tiles;
+    recorded by train_worker). Each tile owns the seeds whose centre falls in
+    its core (the tile minus half the overlap), so seeds in overlaps aren't
+    counted twice.
     """
+    from skimage.segmentation import relabel_sequential
     from ultralytics import YOLO
 
-    if imgsz is None:
-        meta = Path(model_path).parents[1] / "seedlabeler.json"
-        imgsz = json.loads(meta.read_text()).get("imgsz", 1280) if meta.exists() else 1280
+    meta_file = Path(model_path).parents[1] / "seedlabeler.json"
+    meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+    kind, hscale = meta.get("input", "rgb"), meta.get("height_scale_mm", 6.0)
+    work_res, tile, overlap = meta.get("work_res_mm"), meta.get("tile"), meta.get("overlap")
+    imgsz = imgsz or meta.get("imgsz", tile or 1280)
 
     key = str(model_path)
     if key not in _loaded:
@@ -143,18 +268,40 @@ def model_detector(model_path, conf=0.35, imgsz=None):
     model = _loaded[key]
 
     def detect(ortho, valid, res, height):
-        img = ortho.copy()
-        img[~valid] = 0
-        r = model.predict(img, imgsz=imgsz, conf=conf, verbose=False)[0]
+        img = make_input(ortho, height, valid, kind, hscale)
+        found = []  # (confidence, polygon in ortho pixels)
+        if work_res and tile == TILE:
+            f = res / work_res
+            small = _resample(img, f, cv2.INTER_AREA)
+            sh, sw = small.shape[:2]
+            grid = tile_grid(small.shape, overlap)
+            half = overlap // 2
+            for start in range(0, len(grid), 16):
+                batch = grid[start:start + 16]
+                results = model.predict([_crop(small, x, y) for x, y in batch], imgsz=imgsz, conf=conf,
+                                        verbose=False)
+                for (x, y), r in zip(batch, results):
+                    if r.masks is None:
+                        continue
+                    cx0 = x + (half if x > 0 else 0)
+                    cy0 = y + (half if y > 0 else 0)
+                    cx1 = x + TILE - (half if x + TILE < sw else 0)
+                    cy1 = y + TILE - (half if y + TILE < sh else 0)
+                    for poly, c in zip(r.masks.xy, r.boxes.conf.cpu().numpy()):
+                        if len(poly) < 3:
+                            continue
+                        p = poly + [x, y]
+                        mx, my = p.mean(axis=0)
+                        if cx0 <= mx < cx1 and cy0 <= my < cy1:
+                            found.append((float(c), p / min(f, 1.0)))
+        else:  # models trained on whole images (before tiling)
+            r = model.predict(img, imgsz=imgsz, conf=conf, verbose=False)[0]
+            if r.masks is not None:
+                found = [(float(c), p) for p, c in zip(r.masks.xy, r.boxes.conf.cpu().numpy()) if len(p) >= 3]
         labels = np.zeros(ortho.shape[:2], np.int32)
-        if r.masks is not None:
-            order = np.argsort(r.boxes.conf.cpu().numpy())  # most confident drawn last (wins overlaps)
-            for n, i in enumerate(order, start=1):
-                poly = r.masks.xy[i]
-                if len(poly) >= 3:
-                    cv2.fillPoly(labels, [np.round(poly).astype(np.int32)], n)
-        from skimage.segmentation import relabel_sequential
+        for n, (_, p) in enumerate(sorted(found, key=lambda t: t[0]), start=1):  # most confident wins overlaps
+            cv2.fillPoly(labels, [np.round(p).astype(np.int32)], n)
         labels, _, _ = relabel_sequential(labels)
-        return labels, {"model": key, "model_conf": conf}
+        return labels, {"model": key, "model_conf": conf, "model_input": kind}
 
     return detect

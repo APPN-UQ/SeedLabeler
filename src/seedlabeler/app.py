@@ -509,6 +509,9 @@ class MainWindow(QMainWindow):
         if self._live_first:
             self.canvas.clear()
             self.canvas.set_image(img)
+            # dashed box: keep seeds inside it so they fall where stereo gives depth
+            zone = live.depth_zone(self.project, (img.shape[1], img.shape[0]))
+            self.canvas.set_guide(None if zone is None else zone.tolist())
             self.canvas.fit()
             self._live_first = False
         else:
@@ -578,8 +581,9 @@ class MainWindow(QMainWindow):
         if self.project:
             for m in ml.list_models(self.project):
                 score = f"  mAP {m['mask_map50_95']:.2f}" if m["mask_map50_95"] is not None else ""
+                kind = "  C+H" if m.get("input") == "rgbh" else ""
                 rel = Path(m["path"]).relative_to(self.project.root).as_posix()
-                self.detector.addItem(f"MODEL {m['name']}{score}", rel)
+                self.detector.addItem(f"MODEL {m['name']}{kind}{score}", rel)
             i = self.detector.findData(self.project.config.detector)
             self.detector.setCurrentIndex(max(i, 0))
         self.detector.blockSignals(False)
@@ -750,7 +754,8 @@ class MainWindow(QMainWindow):
         models = ml.list_models(self.project)
         best = models[0] if models else None
         lines = [f"CROP      {self.project.config.crop.upper()}",
-                 f"DATASET   {c['train'][0]} TRAIN ({c['train'][1]} SEEDS)   {c['val'][0]} VAL ({c['val'][1]} SEEDS)",
+                 f"DATASET   TRAIN {c['train'][0]} SAMPLES / {c['train'][2]} SEEDS   "
+                 f"VAL {c['val'][0]} / {c['val'][2]}",
                  f"MODELS    {len(models)}" + (f"   LATEST {best['name']}" if best else "")]
         if best and best["mask_map50_95"] is not None:
             lines.append(f"          MASK mAP50-95 {best['mask_map50_95']:.3f}   mAP50 {best['mask_map50']:.3f}")
@@ -855,25 +860,31 @@ class TrainDialog(QDialog):
         self.resize(820, 560)
         v = QVBoxLayout(self)
         c = ml.dataset_counts(self.project)
-        info = QLabel(f"{self.project.config.crop.upper()}   ·   {c['train'][0]} TRAIN IMAGES ({c['train'][1]} SEEDS)"
-                      f"   ·   {c['val'][0]} VAL IMAGES ({c['val'][1]} SEEDS)")
+        info = QLabel(f"{self.project.config.crop.upper()}   ·   TRAIN {c['train'][0]} SAMPLES, {c['train'][1]} TILES, "
+                      f"{c['train'][2]} SEEDS   ·   VAL {c['val'][0]} SAMPLES, {c['val'][1]} TILES, {c['val'][2]} SEEDS")
         info.setObjectName("readout")
         v.addWidget(info)
         form = QFormLayout()
         self.epochs = QSpinBox()
         self.epochs.setRange(1, 1000)
-        self.epochs.setValue(100)
+        self.epochs.setValue(150)
         self.imgsz = QComboBox()
-        self.imgsz.addItems(["640", "960", "1280", "1600"])
-        self.imgsz.setCurrentText("1280")
+        self.imgsz.addItems(["640", "960"])  # dataset tiles are 640 px
+        self.imgsz.setCurrentText("640")
         self.base = QComboBox()
         self.base.addItem(f"PRETRAINED  {ml.BASE_MODEL}", ml.BASE_MODEL)
         self.base.addItem("PRETRAINED  yolo11n-seg.pt (faster)", "yolo11n-seg.pt")
         for m in ml.list_models(self.project):
             self.base.addItem(f"CONTINUE  {m['name']}", str(m["path"]))
+        self.input = QComboBox()
+        for k, v in ml.INPUTS.items():
+            self.input.addItem(v, k)
+        self.input.setCurrentIndex(1)
+        self.input.setToolTip("COLOUR + HEIGHT also shows the model each pixel's height above the stage,\n"
+                              "so it can tell seeds from shadows and stains of the same colour.")
         self.name = QLineEdit(time.strftime("run_%Y%m%d_%H%M%S"))
-        for label, w in (("EPOCHS", self.epochs), ("IMAGE SIZE", self.imgsz), ("START FROM", self.base),
-                         ("RUN NAME", self.name)):
+        for label, w in (("INPUT", self.input), ("EPOCHS", self.epochs), ("IMAGE SIZE", self.imgsz),
+                         ("START FROM", self.base), ("RUN NAME", self.name)):
             form.addRow(caption(label), w)
         v.addLayout(form)
         self.log = QPlainTextEdit()
@@ -891,9 +902,13 @@ class TrainDialog(QDialog):
     def start(self):
         if self.main.proc is not None:
             return
-        argv = ml.train_command(self.project, self.name.text().strip(), self.epochs.value(),
-                                int(self.imgsz.currentText()), self.base.currentData())
+        kind = self.input.currentData()
         self.b_start.setEnabled(False)
+        self.log.appendPlainText("PREPARING DATASET...")
+        QApplication.processEvents()
+        ml.sync_datasets(self.project)  # every dataset sample in both input formats
+        argv = ml.train_command(self.project, self.name.text().strip(), self.epochs.value(),
+                                int(self.imgsz.currentText()), self.base.currentData(), kind)
         self.log.appendPlainText(" ".join(argv[1:]) + "\n")
 
         def ok():

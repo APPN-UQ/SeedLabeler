@@ -122,11 +122,19 @@ class Project:
 
     def delete_sample(self, sample):
         """Remove a sample folder and its images/labels from every crop's dataset."""
-        ds = self.root / "datasets"
-        if ds.exists():
-            for f in list(ds.glob(f"*/images/*/{sample.id}.jpg")) + list(ds.glob(f"*/labels/*/{sample.id}.txt")):
-                f.unlink()
+        for f in self._dataset_files(sample.id):
+            f.unlink()
         _rmtree_retry(sample.path)
+
+    def _dataset_files(self, sample_id):
+        """A sample's images/labels in every crop's datasets (whole-image or tiles)."""
+        ds = self.root / "datasets"
+        if not ds.exists():
+            return []
+        out = []
+        for sub in ("images", "labels"):
+            out += list(ds.glob(f"*/{sub}/*/{sample_id}.*")) + list(ds.glob(f"*/{sub}/*/{sample_id}__t*"))
+        return out
 
     def rename_sample(self, sample, new_id):
         """Rename a sample (e.g. to a scanned barcode); keeps CSVs and dataset entries consistent."""
@@ -144,10 +152,8 @@ class Project:
                                     for line in text[1:]]
                 (new_path / new_name).write_text("\n".join(text) + "\n", encoding="utf-8")
                 f.unlink()
-        ds = self.root / "datasets"
-        if ds.exists():
-            for f in list(ds.glob(f"*/images/*/{sample.id}.jpg")) + list(ds.glob(f"*/labels/*/{sample.id}.txt")):
-                f.rename(f.with_name(new_id + f.suffix))
+        for f in self._dataset_files(sample.id):
+            f.rename(f.with_name(new_id + f.name[len(sample.id):]))
         return renamed
 
     def add_pair(self, left, right, sample_id=None):

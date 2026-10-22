@@ -27,8 +27,11 @@ seedlabeler                               # or: python -m seedlabeler [project_d
 1. **NEW** project → pick a folder → **SETTINGS**: crop, stereo calibration
    (`calib.npz`), optional stage plane (`stage.npz`), camera settings, seed width,
    minimum thickness.
-2. **LIVE** shows the left camera (~25 fps); **DETECT** next to it outlines and
-   counts seeds on the live view (a quick 2D framing aid, not a measurement).
+2. **LIVE** shows the left camera (~25 fps). The dashed red box is where the
+   stereo pair gives depth (computed from the calibration and the depth range or
+   stage file): keep seeds inside it. A tight depth range or a stage file widens
+   it. **DETECT** next to it outlines and counts seeds on the live view (a quick
+   2D framing aid, not a measurement).
 3. **SAMPLE ID**: scan a barcode (scanners type the code + Enter) or type an ID.
    With **AUTO** on, the scan captures straight away under that ID; otherwise
    press **CAPTURE** (cameras in PC Remote mode) or **IMPORT PAIR** (left image
@@ -54,9 +57,16 @@ seedlabeler                               # or: python -m seedlabeler [project_d
 
 ## Models
 
-- **ADD TO DATASET** writes the sample's corrected outlines into the dataset of
-  the project's current crop (`datasets/<crop>/`, YOLO segmentation format,
-  automatic ~80/20 train/val split by sample).
+- **ADD TO DATASET** writes the sample's corrected outlines into the datasets of
+  the project's current crop, in YOLO segmentation format with an automatic
+  ~80/20 train/val split by sample. Images are resampled to ~64 px across the
+  crop's seed width (SETTINGS) and cut into overlapping 640 px tiles, so seeds
+  look the same size whatever the camera height. Two versions are written:
+  `datasets/<crop>/` (colour) and `datasets/<crop>-rgbh/` (brightness, colour
+  saturation and height above the stage packed into three channels).
+- **INPUT** in the training dialog picks COLOUR or COLOUR + HEIGHT. With height
+  the model can tell seeds from shadows and stains of the same colour. The model
+  records its input and tiling; detection rebuilds the same input automatically.
 - **TRAIN** fine-tunes a pretrained segmentation model (or continues from an
   earlier one) on the GPU in a background process, with a live log. Runs land in
   `models/<crop>/<run>/`.

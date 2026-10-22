@@ -177,6 +177,7 @@ class Canvas(QGraphicsView):
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.image_item = None
+        self.guide_item = None
         self.items_ = []
         self.mode = "select"
         self._draw_pts = []
@@ -216,7 +217,27 @@ class Canvas(QGraphicsView):
 
     def clear(self):
         self.scene().clear()
-        self.image_item, self.items_ = None, []
+        self.image_item, self.guide_item, self.items_ = None, None, []
+
+    def set_guide(self, points):
+        """Dashed outline (scene coordinates), e.g. the area where stereo gives depth."""
+        if self.guide_item is not None:
+            self.scene().removeItem(self.guide_item)
+            self.guide_item = None
+        if points is None or len(points) < 3:
+            return
+        path = QPainterPath()
+        path.moveTo(QPointF(*points[0]))
+        for x, y in points[1:]:
+            path.lineTo(QPointF(x, y))
+        path.closeSubpath()
+        pen = _pen(RED, 1.5)
+        pen.setStyle(Qt.CustomDashLine)
+        pen.setDashPattern([6, 6])
+        self.guide_item = QGraphicsPathItem(path)
+        self.guide_item.setPen(pen)
+        self.guide_item.setZValue(30)
+        self.scene().addItem(self.guide_item)
 
     def seeds(self):
         return [{"polygon": it.scene_polygon(), "status": it.status} for it in self.items_]
