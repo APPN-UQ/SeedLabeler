@@ -29,34 +29,44 @@ def _pen(colour, width=1.0):
 
 
 class VertexHandle(QGraphicsRectItem):
+    """Drags only its own vertex.
+
+    It handles the mouse itself rather than being a Qt-movable item: with
+    Qt's built-in dragging, every selected movable item moves together, which
+    dragged the whole (selected) seed along with the vertex.
+    """
     SIZE = 6
 
     def __init__(self, seed_item, index):
         s = self.SIZE
         super().__init__(-s / 2, -s / 2, s, s, seed_item)
         self.seed_item, self.index = seed_item, index
-        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIgnoresTransformations
-                      | QGraphicsItem.ItemSendsGeometryChanges)
+        self.setFlags(QGraphicsItem.ItemIgnoresTransformations)
         self.setPen(_pen(BLACK))
         self.setBrush(QBrush(QColor(TEXT)))
         self.setCursor(Qt.SizeAllCursor)
         self.setZValue(10)
-
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionHasChanged:
-            self.seed_item.move_vertex(self.index, self.pos())
-        return super().itemChange(change, value)
+        self._dragging = False
 
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
             self.seed_item.remove_vertex(self.index)
-            e.accept()
-            return
-        super().mousePressEvent(e)
+        elif e.button() == Qt.LeftButton:
+            self._dragging = True
+        e.accept()  # never pass the press on: the seed must not start a drag
+
+    def mouseMoveEvent(self, e):
+        if self._dragging:
+            pos = self.seed_item.mapFromScene(e.scenePos())
+            self.setPos(pos)
+            self.seed_item.move_vertex(self.index, pos)
+        e.accept()
 
     def mouseReleaseEvent(self, e):
-        super().mouseReleaseEvent(e)
-        self.seed_item.canvas.commit(self.seed_item)
+        if self._dragging:
+            self._dragging = False
+            self.seed_item.canvas.commit(self.seed_item)
+        e.accept()
 
 
 class SeedItem(QGraphicsPolygonItem):

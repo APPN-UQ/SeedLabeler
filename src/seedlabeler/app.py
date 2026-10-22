@@ -9,11 +9,12 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QProcess, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+                               QInputDialog, QMenu,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from . import ml, processing, style
+from . import live, ml, processing, style
 from .canvas import Canvas
 from .project import CROP_PROFILES, Project
 
@@ -74,6 +75,7 @@ class MainWindow(QMainWindow):
         self.undo, self.redo = [], []
         self.tasks = set()
         self.proc = None
+        self.live = None
         self._remeasure_pending = False
         self._remeasure_timer = QTimer(self, singleShot=True, interval=250, timeout=self._remeasure)
         self._build()
@@ -118,9 +120,25 @@ class MainWindow(QMainWindow):
         left.addWidget(caption("samples"))
         self.sample_list = QListWidget()
         self.sample_list.currentRowChanged.connect(self._sample_changed)
+        self.sample_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sample_list.customContextMenuRequested.connect(self._sample_menu)
+        self.sample_list.installEventFilter(self)
         left.addWidget(self.sample_list, 1)
+        left.addWidget(caption("sample id"))
+        self.sample_id = QLineEdit()
+        self.sample_id.setPlaceholderText("SCAN OR TYPE")
+        self.sample_id.setToolTip("Barcode scanners type the code and press Enter.\n"
+                                  "With AUTO on, Enter captures straight away under this ID.")
+        self.sample_id.returnPressed.connect(self._id_entered)
+        left.addWidget(self.sample_id)
+        idrow = QHBoxLayout()
+        self.b_auto = button("auto", checkable=True, tip="Capture as soon as an ID is scanned")
+        self.b_auto.setChecked(True)
+        idrow.addWidget(self.b_auto)
+        idrow.addStretch(1)
+        left.addLayout(idrow)
         self.b_import = button("import pair", self.import_pair, tip="Add a left/right image pair")
-        self.b_capture = button("capture", self.capture, tip="Fire both cameras (PC Remote mode)")
+        self.b_capture = button("capture", self.capture, primary=True, tip="Fire both cameras (PC Remote mode)")
         left.addWidget(self.b_import)
         left.addWidget(self.b_capture)
         lw = QWidget()
@@ -146,6 +164,15 @@ class MainWindow(QMainWindow):
         for w in (self.b_delete, self.b_undo, self.b_redo):
             tools.addWidget(w)
         tools.addStretch(1)
+        self.b_live = button("live", self.toggle_live, checkable=True, tip="Live view from the left camera")
+        self.b_live_det = button("detect", self._live_detect_changed, checkable=True,
+                                 tip="Outline and count seeds on the live view (framing aid)")
+        self.live_count = QLabel("")
+        self.live_count.setObjectName("readout")
+        tools.addWidget(self.b_live)
+        tools.addWidget(self.b_live_det)
+        tools.addWidget(self.live_count)
+        tools.addSpacing(16)
         tools.addWidget(self.b_view)
         tools.addWidget(self.b_fit)
         centre.addLayout(tools)
@@ -237,8 +264,12 @@ class MainWindow(QMainWindow):
     def _update_enabled(self):
         has_p, has_s = self.project is not None, self.sample is not None
         processed = has_s and self.sample.processed
-        for w in (self.b_settings, self.b_import, self.b_capture, self.b_export, self.b_train, self.detector):
+        for w in (self.b_settings, self.b_import, self.b_capture, self.b_export, self.b_train, self.detector,
+                  self.b_live, self.sample_id, self.b_auto):
             w.setEnabled(has_p)
+        self.b_live_det.setEnabled(has_p)
+        if self.live is not None:
+            processed = False  # no editing while the canvas shows the live view
         self.b_detect.setEnabled(has_s)
         for w in (self.b_select, self.b_draw, self.b_delete, self.b_view, self.b_fit,
                   self.b_reviewed, self.b_dataset):
@@ -332,6 +363,7 @@ class MainWindow(QMainWindow):
     def _sample_changed(self, row):
         if row < 0 or not self.project:
             return
+        self.stop_live()
         path = Path(self.sample_list.item(row).data(Qt.UserRole))
         self.sample = next((s for s in self.project.samples() if s.path == path), None)
         self.undo, self.redo = [], []
@@ -366,13 +398,24 @@ class MainWindow(QMainWindow):
         left, right = files
         if "right" in Path(left).parts[-2].lower() or "left" in Path(right).parts[-2].lower():
             left, right = right, left  # files picked from left/ and right/ folders
-        s = self.project.add_pair(left, right)
+        s = self.project.add_pair(left, right, self._take_id())
         self._refresh_samples(select_id=s.id)
         self.detect()
+
+    def _take_id(self):
+        sid = self.sample_id.text().strip()
+        self.sample_id.clear()
+        return sid or None
+
+    def _id_entered(self):
+        if self.b_auto.isChecked() and self.sample_id.text().strip():
+            self.capture()
 
     def capture(self):
         if self.proc is not None:
             return
+        self.stop_live()  # the cameras must be free for the capture process
+        sid = self._take_id()
         tmp = Path(tempfile.mkdtemp(prefix="seedlabeler_"))
         args = ["-m", "sonyrx0.camera.stereo_capture", "--out", str(tmp), "--rig", str(self.project.rig_file)]
         cam = self.project.config.camera_args.strip()
@@ -382,10 +425,11 @@ class MainWindow(QMainWindow):
             rights = sorted((tmp / "right").glob("*.JPG")) + sorted((tmp / "right").glob("*.jpg"))
             if not lefts or not rights:
                 return self._error("Capture failed: no images came back. Are both cameras in PC Remote mode?")
-            s = self.project.add_pair(lefts[-1], rights[-1], self.project.new_sample_id())
+            s = self.project.add_pair(lefts[-1], rights[-1], sid or self.project.new_sample_id())
             shutil.rmtree(tmp, ignore_errors=True)
             self._refresh_samples(select_id=s.id)
             self.detect()
+            self.sample_id.setFocus()  # ready for the next scan
 
         if cam:
             self._run_process(["-m", "sonyrx0.camera.settings", *cam.split()], "SETTING CAMERAS",
@@ -419,6 +463,107 @@ class MainWindow(QMainWindow):
         self.say(msg)
         self.proc.start(sys.executable, args)
         return self.proc
+
+    # ------------------------------------------------------------ live view
+    def toggle_live(self):
+        if self.b_live.isChecked():
+            self.start_live()
+        else:
+            self.stop_live()
+            self._show_sample()
+
+    def start_live(self):
+        if self.live is not None or self.proc is not None:
+            self.b_live.setChecked(self.live is not None)
+            return
+        st = self.project.config.settings
+        self.live = live.LiveThread(live.left_serial(self.project), self.b_live_det.isChecked(),
+                                    live.preview_res(self.project), st.seed_width)
+        self.live.frame.connect(self._live_frame)
+        self.live.failed.connect(self._live_failed)
+        self._live_first = True
+        self.b_live.setChecked(True)
+        self.live.start()
+        self.eye.set_busy(True)
+        self.say("live")
+        self._update_enabled()
+
+    def stop_live(self):
+        if self.live is None:
+            return
+        self.live.stop()
+        self.live = None
+        self.b_live.setChecked(False)
+        self.live_count.setText("")
+        self.eye.set_busy(bool(self.tasks) or self.proc is not None)
+        self._update_enabled()
+
+    def _live_failed(self, e):
+        self.stop_live()
+        self._show_sample()
+        self._error(e)
+
+    def _live_frame(self, img, n):
+        if self.live is None:
+            return
+        if self._live_first:
+            self.canvas.clear()
+            self.canvas.set_image(img)
+            self.canvas.fit()
+            self._live_first = False
+        else:
+            self.canvas.swap_image(img)
+        self.live_count.setText(f"N {n}" if n >= 0 else "")
+
+    def _live_detect_changed(self):
+        if self.live is not None:
+            self.live.detect = self.b_live_det.isChecked()
+
+    # ------------------------------------------------------------ sample management
+    def _sample_menu(self, pos):
+        if self.sample is None:
+            return
+        m = QMenu(self)
+        m.addAction("RENAME", self.rename_sample)
+        m.addAction("DELETE", self.delete_sample)
+        m.exec(self.sample_list.mapToGlobal(pos))
+
+    def eventFilter(self, obj, e):
+        if obj is self.sample_list and e.type() == e.Type.KeyPress and e.key() == Qt.Key_Delete:
+            self.delete_sample()
+            return True
+        return super().eventFilter(obj, e)
+
+    def delete_sample(self):
+        s = self.sample
+        if s is None:
+            return
+        if QMessageBox.question(self, "DELETE", f"Delete sample {s.id}, its images and results?") != QMessageBox.Yes:
+            return
+        self.canvas.clear()
+        self.layers = None
+        self.project.delete_sample(s)
+        self.sample = None
+        self._refresh_samples()
+        self._update_model_readout()
+        self.say(f"deleted {s.id}")
+
+    def rename_sample(self):
+        s = self.sample
+        if s is None:
+            return
+        new, ok = QInputDialog.getText(self, "RENAME", "Sample ID:", text=s.id)
+        if not ok or not new.strip() or new.strip() == s.id:
+            return
+        self.canvas.clear()
+        self.layers = None
+        r = self.project.rename_sample(s, new.strip())
+        self._refresh_samples(select_id=r.id)
+        self.say(f"renamed {s.id} -> {r.id}")
+
+    def closeEvent(self, e):
+        self.stop_live()
+        super().closeEvent(e)
 
     # ------------------------------------------------------------ detect
     def _refresh_models(self):

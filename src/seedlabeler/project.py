@@ -113,8 +113,38 @@ class Project:
             sid = f"{base}_{n}"
         return sid
 
+    def delete_sample(self, sample):
+        """Remove a sample folder and its images/labels from every crop's dataset."""
+        ds = self.root / "datasets"
+        if ds.exists():
+            for f in list(ds.glob(f"*/images/*/{sample.id}.jpg")) + list(ds.glob(f"*/labels/*/{sample.id}.txt")):
+                f.unlink()
+        shutil.rmtree(sample.path)
+
+    def rename_sample(self, sample, new_id):
+        """Rename a sample (e.g. to a scanned barcode); keeps CSVs and dataset entries consistent."""
+        new_id = self.new_sample_id(new_id)
+        new_path = self.root / "samples" / new_id
+        sample.path.rename(new_path)
+        renamed = Sample(new_path)
+        for old_name, new_name in ((f"{sample.id}_seeds.csv", renamed.seeds_csv.name),
+                                   (f"{sample.id}_summary.csv", renamed.summary_csv.name)):
+            f = new_path / old_name
+            if f.exists():
+                text = f.read_text(encoding="utf-8").splitlines()
+                # the first column is the sample id
+                text = [text[0]] + [new_id + line[len(sample.id):] if line.startswith(sample.id) else line
+                                    for line in text[1:]]
+                (new_path / new_name).write_text("\n".join(text) + "\n", encoding="utf-8")
+                f.unlink()
+        ds = self.root / "datasets"
+        if ds.exists():
+            for f in list(ds.glob(f"*/images/*/{sample.id}.jpg")) + list(ds.glob(f"*/labels/*/{sample.id}.txt")):
+                f.rename(f.with_name(new_id + f.suffix))
+        return renamed
+
     def add_pair(self, left, right, sample_id=None):
-        sid = sample_id or self.new_sample_id(Path(left).stem)
+        sid = self.new_sample_id(sample_id or Path(left).stem)
         raw = self.root / "samples" / sid / "raw"
         raw.mkdir(parents=True)
         shutil.copy2(left, raw / "left.jpg")

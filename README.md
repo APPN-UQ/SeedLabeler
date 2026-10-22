@@ -27,9 +27,15 @@ seedlabeler                               # or: python -m seedlabeler [project_d
 1. **NEW** project → pick a folder → **SETTINGS**: crop, stereo calibration
    (`calib.npz`), optional stage plane (`stage.npz`), camera settings, seed width,
    minimum thickness.
-2. **CAPTURE** (cameras in PC Remote mode) or **IMPORT PAIR** (left image first).
-   Detection runs automatically.
-3. Review on the canvas, fix what's wrong (traits update after every edit):
+2. **LIVE** shows the left camera (~25 fps); **DETECT** next to it outlines and
+   counts seeds on the live view (a quick 2D framing aid, not a measurement).
+3. **SAMPLE ID**: scan a barcode (scanners type the code + Enter) or type an ID.
+   With **AUTO** on, the scan captures straight away under that ID; otherwise
+   press **CAPTURE** (cameras in PC Remote mode) or **IMPORT PAIR** (left image
+   first). Full detection then runs automatically (~10 s for a 15 MP pair).
+   Right-click a sample (or select it and press `Delete`) to **RENAME** or
+   **DELETE** it; renaming keeps its CSVs and dataset entries consistent.
+4. Review on the canvas, fix what's wrong (traits update after every edit):
 
    | | |
    |---|---|
@@ -43,7 +49,7 @@ seedlabeler                               # or: python -m seedlabeler [project_d
    | **UNDO / REDO**, **HEIGHT** | edit history, colour/height view |
 
    Outline colours: white = automatic, blue = edited, red = drawn by hand.
-4. **EXPORT CSV**: all samples into `exports/<project>_seeds.csv` and
+5. **EXPORT CSV**: all samples into `exports/<project>_seeds.csv` and
    `_summary.csv` (each sample's own CSVs are always in its folder).
 
 ## Models
@@ -76,5 +82,6 @@ distributing the app.
 ## Tests
 
 `pytest tests -s` runs import → detect → edit → remeasure → dataset → export
-on a real almond pair. `python tools/screenshot.py <project> out.png` renders
+on a real almond pair, plus offscreen GUI checks (vertex dragging, sample
+rename/delete). `python tools/screenshot.py <project> out.png` renders
 the window offscreen.
