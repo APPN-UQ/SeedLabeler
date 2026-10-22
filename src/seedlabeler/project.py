@@ -88,6 +88,13 @@ class Project:
 
     @property
     def rig_file(self):
+        """Which camera serial is left/right. It belongs with the calibration (the
+        calibration is only valid for that assignment), so a rig.json next to
+        calib.npz wins; otherwise the project keeps its own."""
+        if self.config.calib:
+            beside = self.path(self.config.calib).with_name("rig.json")
+            if beside.exists():
+                return beside
         return self.root / "rig.json"
 
     @property
@@ -119,7 +126,7 @@ class Project:
         if ds.exists():
             for f in list(ds.glob(f"*/images/*/{sample.id}.jpg")) + list(ds.glob(f"*/labels/*/{sample.id}.txt")):
                 f.unlink()
-        shutil.rmtree(sample.path)
+        _rmtree_retry(sample.path)
 
     def rename_sample(self, sample, new_id):
         """Rename a sample (e.g. to a scanned barcode); keeps CSVs and dataset entries consistent."""
@@ -150,6 +157,22 @@ class Project:
         shutil.copy2(left, raw / "left.jpg")
         shutil.copy2(right, raw / "right.jpg")
         return Sample(raw.parent)
+
+
+def _rmtree_retry(path, tries=10, wait=0.5):
+    """rmtree that waits out short locks (OneDrive uploading new files, a scan)."""
+    last = None
+    for _ in range(tries):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as e:
+            last = e
+            time.sleep(wait)
+    raise PermissionError(f"Could not delete {path}: a file is in use ({last}). "
+                          "Close it (Excel? OneDrive syncing?) and try again.")
 
 
 class Sample:

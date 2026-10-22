@@ -19,6 +19,30 @@ from sonyrx0.stereo.depth import StereoRig, colourise
 _rigs = {}
 
 
+def check_swapped(calib, img_l, img_r):
+    """True if the pair looks left/right swapped relative to the calibration.
+
+    In a correct pair, matching features sit on the same row after rectification
+    and lie further right in the left image (positive disparity). A swapped
+    pair breaks both. Checked on quarter-size images with ORB features (~0.5 s).
+    """
+    rig = _rig(calib, 0.25)
+    rl, rr = rig.rectify(img_l, img_r)
+    orb = cv2.ORB_create(3000)
+    k1, d1 = orb.detectAndCompute(cv2.cvtColor(rl, cv2.COLOR_BGR2GRAY), None)
+    k2, d2 = orb.detectAndCompute(cv2.cvtColor(rr, cv2.COLOR_BGR2GRAY), None)
+    if d1 is None or d2 is None:
+        return False
+    m = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(d1, d2)
+    if len(m) < 30:
+        return False
+    p1 = np.array([k1[x.queryIdx].pt for x in m])
+    p2 = np.array([k2[x.trainIdx].pt for x in m])
+    dy, dx = p1[:, 1] - p2[:, 1], p1[:, 0] - p2[:, 0]
+    consistent = np.abs(dy - np.median(dy)) < 3
+    return bool(np.median(dx[consistent]) < 0)
+
+
 def _rig(calib, scale):
     key = (str(calib), scale)
     if key not in _rigs:
@@ -54,18 +78,29 @@ def detect(project, sample, model_detector=None):
     cfg, st = project.config, project.config.settings
     if not cfg.calib:
         raise RuntimeError("Set the stereo calibration file in project settings first")
-    rig = _rig(project.path(cfg.calib), st.scale)
+    calib = project.path(cfg.calib)
+    rig = _rig(calib, st.scale)
     stage = Stage.load(project.path(cfg.stage)) if cfg.stage else None
     kw = {} if stage else {"min_depth": st.min_depth, "max_depth": st.max_depth}
-    seeds, ex = measure_pair(rig, read_image(sample.left), read_image(sample.right), stage,
+    img_l, img_r = read_image(sample.left), read_image(sample.right)
+    swapped = check_swapped(calib, img_l, img_r)
+    if swapped:  # fix it at the source so the stored pair is right from now on
+        img_l, img_r = img_r, img_l
+        tmp = sample.left.with_name("swap.tmp")
+        sample.left.rename(tmp)
+        sample.right.rename(sample.left)
+        tmp.rename(sample.right)
+    seeds, ex = measure_pair(rig, img_l, img_r, stage,
                              min_seed_width_mm=st.seed_width, min_area_mm2=st.min_area,
                              min_thickness_mm=st.min_thickness, detector=model_detector, **kw)
     grid, stage = ex["grid"], ex["stage"]
     cv2.imwrite(str(sample.ortho_file), ex["ortho"], [cv2.IMWRITE_PNG_COMPRESSION, 1])
     np.savez_compressed(sample.height_file, height=ex["height"].astype(np.float16),
                         valid=ex["valid"])
+    depth_cov = float(np.isfinite(ex["height"][ex["valid"]]).mean()) if ex["valid"].any() else 0.0
     meta = {"res": grid.res, "a0": grid.a0, "b0": grid.b0, "stage_distance": stage.d,
-            "stage_method": stage.method, "detector": cfg.detector, **ex["segmentation"]}
+            "stage_method": stage.method, "detector": cfg.detector, "swapped_fixed": swapped,
+            "depth_coverage": round(depth_cov, 3), **ex["segmentation"]}
     sample.meta_file.write_text(json.dumps(meta, indent=2))
 
     source = "classic" if model_detector is None else f"model:{cfg.detector}"
@@ -82,8 +117,8 @@ def detect(project, sample, model_detector=None):
 # --- measurement -----------------------------------------------------------
 def load_layers(sample):
     ortho = cv2.imread(str(sample.ortho_file))
-    z = np.load(sample.height_file)
-    return ortho, z["height"].astype(np.float32), z["valid"]
+    with np.load(sample.height_file) as z:  # closed at once: an open file blocks deleting the sample
+        return ortho, z["height"].astype(np.float32), z["valid"]
 
 
 def remeasure(project, sample, ann, layers=None):

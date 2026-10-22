@@ -540,13 +540,18 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(self, "DELETE", f"Delete sample {s.id}, its images and results?") != QMessageBox.Yes:
             return
+        self._remeasure_timer.stop()
         self.canvas.clear()
-        self.layers = None
-        self.project.delete_sample(s)
+        self.layers = self.ann = None
         self.sample = None
-        self._refresh_samples()
-        self._update_model_readout()
-        self.say(f"deleted {s.id}")
+        try:
+            self.project.delete_sample(s)
+            self.say(f"deleted {s.id}")
+        except Exception as e:  # noqa: BLE001
+            self._error(str(e))
+        finally:
+            self._refresh_samples()
+            self._update_model_readout()
 
     def rename_sample(self):
         s = self.sample

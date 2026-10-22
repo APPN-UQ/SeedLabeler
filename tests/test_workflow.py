@@ -57,3 +57,11 @@ def test_workflow(tmp_path):
 
     paths = processing.export_project(p)
     assert len(paths) == 2 and all(x.exists() for x in paths)
+
+
+def test_swapped_pair_is_detected():
+    from sonyrx0.stereo.common import read_image
+    left, right = _pair()
+    L, R = read_image(left), read_image(right)
+    assert processing.check_swapped(CALIB, L, R) is False
+    assert processing.check_swapped(CALIB, R, L) is True
