@@ -777,18 +777,18 @@ class MainWindow(QMainWindow):
         if len(sel) != 1 or not self.ann:
             return self.say("select one seed first")
         i = sel[0]
-        box = sam.bbox(self.ann["seeds"][i]["polygon"])
+        box, centre = sam.core_prompt(self.ann["seeds"][i]["polygon"])
 
         def replace(poly):
             seeds = [dict(s) for s in self.ann["seeds"]]
             status = seeds[i]["status"]
             seeds[i] = {"polygon": poly, "status": "edited" if status == "auto" else status}
-            self.sam_active = {"index": i, "box": box, "points": [], "labels": []}
+            self.sam_active = {"index": i, "box": box, "points": [centre], "labels": [1]}
             self._edited(seeds)
             self.canvas.set_seeds(seeds, keep_selection=i)
 
         self._sam_preload()
-        self._sam_run(box, None, None, replace)
+        self._sam_run(box, [centre], [1], replace)
 
     def sam_refine_all(self):
         if not self.ann or not self.ann["seeds"]:

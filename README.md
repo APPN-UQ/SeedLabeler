@@ -60,8 +60,8 @@ seedlabeler                               # or: python -m seedlabeler [project_d
 
 ## SAM
 
-SAM (Segment Anything) runs on a full-resolution crop around each prompt, then
-has its shadows trimmed with the height map. Pick the model in SETTINGS:
+SAM (Segment Anything) runs on a full-resolution crop around each prompt; it
+separates seeds from their shadows by itself. Pick the model in SETTINGS:
 MobileSAM (~30 ms per seed) or SAM 2.1 base (~100 ms, a little sharper);
 weights download once to `~/.seedlabeler/weights`. **SAM AFTER DETECT** runs
 REFINE ALL automatically after every detection: the detector finds the seeds,

@@ -2,8 +2,7 @@
 
 Prompts run on a full-resolution crop around the box, not the whole image:
 SAM resizes its input to 1024 px, which would leave a seed 20-50 px wide in a
-16 MP top-down image. A shadow-trim with the height map follows, since SAM
-only sees colour. Weights are downloaded once to ~/.seedlabeler/weights.
+16 MP top-down image. Weights are downloaded once to ~/.seedlabeler/weights.
 """
 import threading
 from pathlib import Path
@@ -44,8 +43,6 @@ def segment(model_name, ortho, box, points=None, point_labels=None, height=None,
     first click and seed_px (a seed width in pixels) wide on each side.
     Returns a polygon (N, 2) in ortho pixels, or None.
     """
-    from chickpea.segment import trim_flat
-
     use_box = box is not None
     if not use_box:
         px, py = points[0]
@@ -71,10 +68,17 @@ def segment(model_name, ortho, box, points=None, point_labels=None, height=None,
     if r.masks is None or not len(r.masks.data):
         return None
     m = r.masks.data[0].cpu().numpy() > 0.5
-    if height is not None and res:
-        lab, _ = trim_flat(m.astype(np.int32), height[cy0:cy1, cx0:cx1], res)  # drop the flat (shadow) parts
-        if lab.any():
-            m = lab > 0
+    # No height-based shadow trim here: SAM separates objects by shape and
+    # texture and already leaves shadows out; stereo depth is unreliable along
+    # seed edges, so trimming on it only cut notches into good outlines.
+    # remove thin attached slivers (a strip of shadow along an edge): open with a
+    # disk ~0.3 mm in radius, which leaves the seed's own outline essentially intact
+    if res:
+        r = max(1, int(round(0.3 / res)))
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        opened = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, k) > 0
+        if opened.sum() > 0.5 * m.sum():
+            m = opened
     # keep the piece that overlaps the box (or sits under the click) most
     n, comp = cv2.connectedComponents(m.astype(np.uint8))
     if n > 2 and not use_box:
@@ -111,8 +115,36 @@ def _iou(a, b, shape):
     return inter / union if union else 0.0
 
 
+def core_prompt(polygon, shave=0.15):
+    """A clean prompt from an existing outline: (box, centre point).
+
+    Outlines from colour segmentation can carry a shadow skirt; its bounding box
+    then invites SAM to include the shadow. Opening the outline with a disk
+    ~shave of its smaller dimension removes thin appendages, and the box and
+    centre of what remains make a tight, unambiguous prompt.
+    """
+    p = np.asarray(polygon, float)
+    x0, y0 = np.floor(p.min(0)).astype(int) - 2
+    x1, y1 = np.ceil(p.max(0)).astype(int) + 2
+    m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(m, [np.round(p - [x0, y0]).astype(np.int32)], 1)
+    r = max(1, int(shave * min(x1 - x0, y1 - y0) / 2))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    core = cv2.morphologyEx(m, cv2.MORPH_OPEN, k)
+    if core.sum() < 0.5 * m.sum():
+        core = m
+    ys, xs = np.nonzero(core)
+    bx0, by0, bx1, by1 = xs.min(), ys.min(), xs.max(), ys.max()
+    d = 0.06 * max(bx1 - bx0, by1 - by0)
+    box = (bx0 - d + x0, by0 - d + y0, bx1 + d + x0, by1 + d + y0)
+    # centre: the core pixel farthest from its edge (inside even for curved seeds like cashews)
+    dist = cv2.distanceTransform(core, cv2.DIST_L2, 5)
+    cy, cx = np.unravel_index(np.argmax(dist), dist.shape)
+    return box, (float(cx + x0), float(cy + y0))
+
+
 def refine_all(model_name, ortho, seeds, height=None, res=None, min_iou=0.6):
-    """Redraw every seed with SAM, prompted by its current outline's box.
+    """Redraw every seed with SAM, prompted by its current outline (tight box + centre click).
 
     A SAM outline replaces the old one only if they broadly agree (IoU >=
     min_iou): SAM can occasionally grab a neighbour or a fragment, and then the
@@ -124,7 +156,8 @@ def refine_all(model_name, ortho, seeds, height=None, res=None, min_iou=0.6):
         if s["status"] == "manual":
             out.append(s)
             continue
-        poly = segment(model_name, ortho, bbox(s["polygon"]), height=height, res=res)
+        box, centre = core_prompt(s["polygon"])
+        poly = segment(model_name, ortho, box, [centre], [1], height=height, res=res)
         if poly is not None:
             x0, y0, x1, y1 = (int(v) for v in bbox(s["polygon"], pad=0.5))
             x0, y0 = max(0, x0), max(0, y0)
