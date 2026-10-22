@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seedlabeler"
+version = "0.1.0"
+description = "Desktop app: stereo seed traits, review/correct outlines, label data and train per-crop segmentation models"
+requires-python = ">=3.10"
+dependencies = [
+    "chickpea-seed",   # pip install -e ../ChickpeaSeed (and ../SonyRX0)
+    "sonyrx0",
+    "PySide6>=6.6",
+    "numpy",
+    "pandas",
+    "opencv-contrib-python>=4.8,<5",
+]
+
+[project.optional-dependencies]
+train = ["ultralytics", "torch", "torchvision"]
+dev = ["pytest"]
+
+[project.gui-scripts]
+seedlabeler = "seedlabeler.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

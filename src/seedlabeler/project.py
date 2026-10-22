@@ -1,0 +1,160 @@
+"""Projects and samples on disk.
+
+<project>/
+    project.json              name, crop profile, calibration, detector, settings
+    rig.json                  which camera serial is left/right
+    samples/<id>/
+        raw/left.jpg, raw/right.jpg
+        ortho.png             top-down stage image (written by processing)
+        height.npz            height above stage (mm, float16)
+        meta.json             grid resolution/offset, stage distance, detector...
+        annotations.json      seed polygons (+ the untouched automatic ones)
+        <id>_seeds.csv, <id>_summary.csv
+    datasets/<crop>/          training data, one dataset per crop
+    models/<crop>/<run>/      trained models
+    exports/                  project-wide trait tables
+"""
+import json
+import re
+import shutil
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+CROP_PROFILES = {
+    # smallest expected seed width (for splitting) and minimum height above the stage
+    "chickpea": {"seed_width": 6.0, "min_thickness": 1.5},
+    "almond": {"seed_width": 10.0, "min_thickness": 2.0},
+    "wheat": {"seed_width": 2.5, "min_thickness": 1.0},
+    "custom": {"seed_width": 4.0, "min_thickness": 1.0},
+}
+
+
+@dataclass
+class Settings:
+    seed_width: float = 6.0
+    min_thickness: float = 1.5
+    min_area: float = 4.0
+    min_depth: float = 200.0   # stereo search range (mm), used when there is no stage file
+    max_depth: float = 800.0
+    scale: float = 0.5         # stereo matching scale
+    model_conf: float = 0.35
+
+
+@dataclass
+class ProjectConfig:
+    name: str
+    crop: str = "chickpea"
+    calib: str = ""
+    stage: str = ""
+    detector: str = "classic"  # "classic" or a model path relative to the project
+    camera_args: str = ""      # e.g. "--mode m --shutter 1/125 --iso 400"
+    settings: Settings = field(default_factory=Settings)
+
+
+class Project:
+    def __init__(self, root, config):
+        self.root = Path(root).resolve()
+        self.config = config
+
+    # --- persistence ---------------------------------------------------
+    @classmethod
+    def create(cls, root, name, crop="chickpea", calib="", stage=""):
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        prof = CROP_PROFILES.get(crop, CROP_PROFILES["custom"])
+        cfg = ProjectConfig(name=name, crop=crop, calib=calib, stage=stage,
+                            settings=Settings(seed_width=prof["seed_width"], min_thickness=prof["min_thickness"]))
+        p = cls(root, cfg)
+        (root / "samples").mkdir(exist_ok=True)
+        p.save()
+        return p
+
+    @classmethod
+    def open(cls, root):
+        root = Path(root)
+        d = json.loads((root / "project.json").read_text())
+        d["settings"] = Settings(**d.get("settings", {}))
+        return cls(root, ProjectConfig(**d))
+
+    def save(self):
+        (self.root / "project.json").write_text(json.dumps(asdict(self.config), indent=2))
+
+    # --- paths -----------------------------------------------------------
+    def path(self, rel):
+        """Project-relative or absolute path."""
+        p = Path(rel)
+        return p if p.is_absolute() else self.root / p
+
+    @property
+    def rig_file(self):
+        return self.root / "rig.json"
+
+    @property
+    def dataset_dir(self):
+        return self.root / "datasets" / self.config.crop
+
+    @property
+    def models_dir(self):
+        return self.root / "models" / self.config.crop
+
+    # --- samples -------------------------------------------------------
+    def samples(self):
+        d = self.root / "samples"
+        if not d.exists():
+            return []
+        return [Sample(p) for p in sorted(d.iterdir()) if (p / "raw" / "left.jpg").exists()]
+
+    def new_sample_id(self, stem=None):
+        base = re.sub(r"[^A-Za-z0-9_-]+", "_", stem) if stem else time.strftime("%Y%m%d_%H%M%S")
+        sid, n = base, 1
+        while (self.root / "samples" / sid).exists():
+            n += 1
+            sid = f"{base}_{n}"
+        return sid
+
+    def add_pair(self, left, right, sample_id=None):
+        sid = sample_id or self.new_sample_id(Path(left).stem)
+        raw = self.root / "samples" / sid / "raw"
+        raw.mkdir(parents=True)
+        shutil.copy2(left, raw / "left.jpg")
+        shutil.copy2(right, raw / "right.jpg")
+        return Sample(raw.parent)
+
+
+class Sample:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.id = self.path.name
+
+    left = property(lambda self: self.path / "raw" / "left.jpg")
+    right = property(lambda self: self.path / "raw" / "right.jpg")
+    ortho_file = property(lambda self: self.path / "ortho.png")
+    height_file = property(lambda self: self.path / "height.npz")
+    meta_file = property(lambda self: self.path / "meta.json")
+    ann_file = property(lambda self: self.path / "annotations.json")
+    seeds_csv = property(lambda self: self.path / f"{self.id}_seeds.csv")
+    summary_csv = property(lambda self: self.path / f"{self.id}_summary.csv")
+
+    @property
+    def processed(self):
+        return self.ann_file.exists() and self.ortho_file.exists()
+
+    def meta(self):
+        return json.loads(self.meta_file.read_text()) if self.meta_file.exists() else {}
+
+    def annotations(self):
+        if not self.ann_file.exists():
+            return {"seeds": [], "auto": [], "reviewed": False, "in_dataset": False}
+        return json.loads(self.ann_file.read_text())
+
+    def save_annotations(self, ann):
+        self.ann_file.write_text(json.dumps(ann))
+
+    def status(self):
+        if not self.processed:
+            return "new"
+        a = self.annotations()
+        if a.get("in_dataset"):
+            return "dataset"
+        return "reviewed" if a.get("reviewed") else "detected"
