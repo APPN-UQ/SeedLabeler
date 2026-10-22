@@ -2,9 +2,9 @@
 
 Select: click a seed. Drag it to move; drag a white square to move a vertex;
 double-click an edge to insert a vertex; right-click a vertex to remove it;
-Delete removes the seed. Draw: click to place points, double-click or Enter
-to close, Backspace removes the last point, Esc cancels. Wheel zooms, middle
-drag or Space+drag pans, F fits the view.
+Delete removes the seed. Box (SAM): drag a box or click a seed. Wheel zooms,
+middle drag or Space+drag pans, F fits the view. Each seed is filled with its
+own palette colour.
 """
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPathItem, QGraphicsPixmap
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
                                QGraphicsView)
 
-from .style import BLACK, DIM, RED, STATUS_COLOURS, TEXT
+from .style import BLACK, RED, TEXT, palette
 
 
 def to_qimage(bgr):
@@ -76,20 +76,23 @@ class SeedItem(QGraphicsPolygonItem):
         self.handles = []
         self.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable)
         self.setAcceptHoverEvents(True)
+        self.colour = QColor(palette(number - 1))
         self.label = QGraphicsSimpleTextItem(str(number), self)
         self.label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
-        self.label.setBrush(QColor(DIM))
+        self.label.setBrush(QColor(TEXT))
         self._place_label()
         self._restyle()
 
     # --- appearance ---
     def _restyle(self, hover=False):
+        fill = QColor(self.colour)
         if self.isSelected():
-            self.setPen(_pen(RED, 2))
-            self.setBrush(QColor(255, 43, 28, 35))
+            self.setPen(_pen(TEXT, 2.5))
+            fill.setAlpha(130)
         else:
-            self.setPen(_pen(STATUS_COLOURS.get(self.status, TEXT), 1.2))
-            self.setBrush(QColor(255, 255, 255, 22) if hover else Qt.NoBrush)
+            self.setPen(_pen(self.colour, 1.5))
+            fill.setAlpha(110 if hover else 70)
+        self.setBrush(fill)
 
     def _place_label(self):
         c = self.polygon().boundingRect().center()
@@ -183,8 +186,6 @@ class Canvas(QGraphicsView):
         self.guide_item = None
         self.items_ = []
         self.mode = "select"
-        self._draw_pts = []
-        self._draw_path = None
         self._panning = None
         self._space = False
         self._box_start = None
@@ -214,6 +215,9 @@ class Canvas(QGraphicsView):
         self.items_ = []
         for n, s in enumerate(seeds, start=1):
             it = SeedItem(self, s["polygon"], s["status"], n)
+            if self.mode != "select":
+                it.setFlag(QGraphicsItem.ItemIsSelectable, False)
+                it.setFlag(QGraphicsItem.ItemIsMovable, False)
             self.scene().addItem(it)
             self.items_.append(it)
         self.scene().blockSignals(False)
@@ -284,44 +288,14 @@ class Canvas(QGraphicsView):
         self.edited.emit(seeds)
 
     def set_mode(self, mode):
+        """select (edit), box (SAM prompts) or view (read-only)."""
         self.mode = mode
-        self._cancel_draw()
         self.setDragMode(QGraphicsView.RubberBandDrag if mode == "select" else QGraphicsView.NoDrag)
-        self.viewport().setCursor(Qt.ArrowCursor if mode == "select" else Qt.CrossCursor)
+        self.viewport().setCursor(Qt.CrossCursor if mode == "box" else Qt.ArrowCursor)
         for it in self.items_:
             it.setFlag(QGraphicsItem.ItemIsSelectable, mode == "select")
             it.setFlag(QGraphicsItem.ItemIsMovable, mode == "select")
-
-    def _finish_draw(self):
-        if len(self._draw_pts) >= 3:
-            seeds = self.seeds() + [{"polygon": [[p.x(), p.y()] for p in self._draw_pts], "status": "manual"}]
-            self._cancel_draw()
-            self.set_seeds(seeds, keep_selection=len(seeds) - 1)
-            self.edited.emit(seeds)
-        else:
-            self._cancel_draw()
-
-    def _cancel_draw(self):
-        self._draw_pts = []
-        if self._draw_path is not None:
-            self.scene().removeItem(self._draw_path)
-            self._draw_path = None
-
-    def _update_draw_path(self, cursor=None):
-        if self._draw_path is None:
-            self._draw_path = QGraphicsPathItem()
-            self._draw_path.setPen(_pen(RED, 1.5))
-            self._draw_path.setZValue(20)
-            self.scene().addItem(self._draw_path)
-        path = QPainterPath()
-        pts = self._draw_pts + ([cursor] if cursor is not None else [])
-        if pts:
-            path.moveTo(pts[0])
-            for p in pts[1:]:
-                path.lineTo(p)
-        for p in self._draw_pts:
-            path.addEllipse(p, 1.5, 1.5)
-        self._draw_path.setPath(path)
+            it.setAcceptHoverEvents(mode != "view")
 
     # --- events ---
     def _on_selection(self):
@@ -337,10 +311,6 @@ class Canvas(QGraphicsView):
             self._panning = e.position()
             self.viewport().setCursor(Qt.ClosedHandCursor)
             return
-        if self.mode == "draw" and e.button() == Qt.LeftButton:
-            self._draw_pts.append(self.mapToScene(e.position().toPoint()))
-            self._update_draw_path()
-            return
         if self.mode == "box" and e.button() in (Qt.LeftButton, Qt.RightButton):
             negative = e.button() == Qt.RightButton or bool(e.modifiers() & Qt.ShiftModifier)
             self._box_start = (e.position(), self.mapToScene(e.position().toPoint()), negative)
@@ -354,8 +324,6 @@ class Canvas(QGraphicsView):
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(d.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
             return
-        if self.mode == "draw" and self._draw_pts:
-            self._update_draw_path(self.mapToScene(e.position().toPoint()))
         if self.mode == "box" and self._box_start is not None and not self._box_start[2]:
             a, b = self._box_start[1], self.mapToScene(e.position().toPoint())
             if self._box_item is None:
@@ -372,7 +340,7 @@ class Canvas(QGraphicsView):
     def mouseReleaseEvent(self, e):
         if self._panning is not None:
             self._panning = None
-            self.viewport().setCursor(Qt.ArrowCursor if self.mode == "select" else Qt.CrossCursor)
+            self.viewport().setCursor(Qt.CrossCursor if self.mode == "box" else Qt.ArrowCursor)
             return
         if self.mode == "box" and self._box_start is not None:
             start_view, start, negative = self._box_start
@@ -388,12 +356,6 @@ class Canvas(QGraphicsView):
             return
         super().mouseReleaseEvent(e)
 
-    def mouseDoubleClickEvent(self, e):
-        if self.mode == "draw":
-            self._finish_draw()
-            return
-        super().mouseDoubleClickEvent(e)
-
     def keyPressEvent(self, e):
         k = e.key()
         if k == Qt.Key_Space and not e.isAutoRepeat():
@@ -401,16 +363,11 @@ class Canvas(QGraphicsView):
             self.viewport().setCursor(Qt.OpenHandCursor)
         elif k in (Qt.Key_Delete,) and self.mode == "select":
             self.delete_selected()
-        elif k in (Qt.Key_Return, Qt.Key_Enter) and self.mode == "draw":
-            self._finish_draw()
         elif k == Qt.Key_Escape:
-            self._cancel_draw() if self.mode == "draw" else self.scene().clearSelection()
-        elif k == Qt.Key_Backspace and self.mode == "draw" and self._draw_pts:
-            self._draw_pts.pop()
-            self._update_draw_path()
+            self.scene().clearSelection()
         elif k == Qt.Key_F:
             self.fit()
-        elif k == Qt.Key_R:
+        elif k == Qt.Key_R and self.mode != "view":
             self.resegmentRequested.emit()
         else:
             super().keyPressEvent(e)
@@ -418,5 +375,5 @@ class Canvas(QGraphicsView):
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_Space and not e.isAutoRepeat():
             self._space = False
-            self.viewport().setCursor(Qt.ArrowCursor if self.mode == "select" else Qt.CrossCursor)
+            self.viewport().setCursor(Qt.CrossCursor if self.mode == "box" else Qt.ArrowCursor)
         super().keyReleaseEvent(e)

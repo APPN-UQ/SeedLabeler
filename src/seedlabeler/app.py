@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDial
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from . import live, ml, processing, sam, style
+from .dataset_view import DatasetDialog
 from .canvas import Canvas
 from .project import CROP_PROFILES, Project
 
@@ -23,7 +24,7 @@ TABLE_COLS = [("#", "seed_id", "{:.0f}"), ("", "status", "{}"), ("LEN", "length_
               ("VOL", "volume_mm3", "{:.0f}"), ("AR", "aspect_ratio", "{:.2f}"), ("CIRC", "circularity", "{:.2f}"),
               ("L*", "L_mean", "{:.1f}"), ("a*", "a_mean", "{:.1f}"), ("b*", "b_mean", "{:.1f}")]
 STATUS_GLYPH = {"auto": "·", "edited": "~", "manual": "+"}
-SAMPLE_GLYPH = {"new": "○", "detected": "◐", "reviewed": "●", "dataset": "◆"}
+SAMPLE_GLYPH = {"new": "○", "detected": "◐", "reviewed": "◐", "dataset": "◆"}
 
 
 class Task(QThread):
@@ -153,7 +154,6 @@ class MainWindow(QMainWindow):
         centre = QVBoxLayout()
         tools = QHBoxLayout()
         self.b_select = button("select", lambda: self._set_mode("select"), checkable=True)
-        self.b_draw = button("draw", lambda: self._set_mode("draw"), checkable=True)
         self.b_box = button("box", lambda: self._set_mode("box"), checkable=True,
                             tip="SAM: drag a box around a seed, or click a seed.\n"
                                 "Then click to include more, Shift/right-click to exclude.")
@@ -162,22 +162,16 @@ class MainWindow(QMainWindow):
         self.b_delete = button("delete", lambda: self.canvas.delete_selected())
         self.b_undo = button("undo", self.do_undo)
         self.b_redo = button("redo", self.do_redo)
-        self.b_view = button("height", self.toggle_view, checkable=True)
+        self.b_view = button("depth map", self.toggle_view, checkable=True)
         self.b_fit = button("fit", lambda: self.canvas.fit())
-        for w in (self.b_select, self.b_draw, self.b_box):
+        for w in (self.b_select, self.b_box):
             tools.addWidget(w)
         tools.addSpacing(16)
         for w in (self.b_samfix, self.b_delete, self.b_undo, self.b_redo):
             tools.addWidget(w)
         tools.addStretch(1)
         self.b_live = button("live", self.toggle_live, checkable=True, tip="Live view from the left camera")
-        self.b_live_det = button("detect", self._live_detect_changed, checkable=True,
-                                 tip="Outline and count seeds on the live view (framing aid)")
-        self.live_count = QLabel("")
-        self.live_count.setObjectName("readout")
         tools.addWidget(self.b_live)
-        tools.addWidget(self.b_live_det)
-        tools.addWidget(self.live_count)
         tools.addSpacing(16)
         tools.addWidget(self.b_view)
         tools.addWidget(self.b_fit)
@@ -207,17 +201,18 @@ class MainWindow(QMainWindow):
         det.addWidget(self.detector, 1)
         self.b_detect = button("detect", self.detect, primary=True)
         self.b_refine = button("refine all", self.sam_refine_all,
-                               tip="Redraw every automatic outline with SAM, prompted by its box")
+                               tip="Redraw every automatic outline with SAM\n"
+                                   "(DETECT already does this when SAM REFINE is on in Settings)")
         det.addWidget(self.b_detect)
         det.addWidget(self.b_refine)
         right.addLayout(det)
         rev = QHBoxLayout()
-        self.b_reviewed = button("reviewed", self.toggle_reviewed, checkable=True,
-                                 tip="Mark this sample's outlines as checked")
         self.b_dataset = button("add to dataset", self.add_to_dataset,
                                 tip="Use this sample's outlines to train models for this crop")
-        rev.addWidget(self.b_reviewed)
+        self.b_view_ds = button("view dataset", self.view_dataset,
+                                tip="Thumbnails of this crop's dataset; zoom in, open or remove")
         rev.addWidget(self.b_dataset)
+        rev.addWidget(self.b_view_ds)
         rev.addStretch(1)
         right.addLayout(rev)
         right.addSpacing(8)
@@ -279,12 +274,12 @@ class MainWindow(QMainWindow):
         for w in (self.b_settings, self.b_import, self.b_capture, self.b_export, self.b_train, self.detector,
                   self.b_live, self.sample_id, self.b_auto):
             w.setEnabled(has_p)
-        self.b_live_det.setEnabled(has_p)
+        self.b_view_ds.setEnabled(has_p)
         if self.live is not None:
             processed = False  # no editing while the canvas shows the live view
         self.b_detect.setEnabled(has_s)
-        for w in (self.b_select, self.b_draw, self.b_box, self.b_samfix, self.b_refine, self.b_delete,
-                  self.b_view, self.b_fit, self.b_reviewed, self.b_dataset):
+        for w in (self.b_select, self.b_box, self.b_samfix, self.b_refine, self.b_delete,
+                  self.b_view, self.b_fit, self.b_dataset):
             w.setEnabled(processed)
         self.b_undo.setEnabled(processed and bool(self.undo))
         self.b_redo.setEnabled(processed and bool(self.redo))
@@ -390,10 +385,10 @@ class MainWindow(QMainWindow):
             self.layers = processing.load_layers(self.sample)
             self.ann = self.sample.annotations()
             self.b_view.setChecked(False)
+            self.b_view.setText("DEPTH MAP")
             self.canvas.set_image(self.layers[0])
             self.canvas.set_seeds(self.ann["seeds"])
             QTimer.singleShot(0, self.canvas.fit)
-            self.b_reviewed.setChecked(bool(self.ann.get("reviewed")))
             self._load_table()
         elif self.sample:
             self.readout.setText("NOT DETECTED YET")
@@ -489,8 +484,7 @@ class MainWindow(QMainWindow):
             self.b_live.setChecked(self.live is not None)
             return
         st = self.project.config.settings
-        self.live = live.LiveThread(live.left_serial(self.project), self.b_live_det.isChecked(),
-                                    live.preview_res(self.project), st.seed_width)
+        self.live = live.LiveThread(live.left_serial(self.project))
         self.live.frame.connect(self._live_frame)
         self.live.failed.connect(self._live_failed)
         self._live_first = True
@@ -506,7 +500,6 @@ class MainWindow(QMainWindow):
         self.live.stop()
         self.live = None
         self.b_live.setChecked(False)
-        self.live_count.setText("")
         self.eye.set_busy(bool(self.tasks) or self.proc is not None)
         self._update_enabled()
 
@@ -515,7 +508,7 @@ class MainWindow(QMainWindow):
         self._show_sample()
         self._error(e)
 
-    def _live_frame(self, img, n):
+    def _live_frame(self, img):
         if self.live is None:
             return
         if self._live_first:
@@ -528,11 +521,6 @@ class MainWindow(QMainWindow):
             self._live_first = False
         else:
             self.canvas.swap_image(img)
-        self.live_count.setText(f"N {n}" if n >= 0 else "")
-
-    def _live_detect_changed(self):
-        if self.live is not None:
-            self.live.detect = self.b_live_det.isChecked()
 
     # ------------------------------------------------------------ sample management
     def _sample_menu(self, pos):
@@ -632,7 +620,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ editing
     def _set_mode(self, mode):
         self.b_select.setChecked(mode == "select")
-        self.b_draw.setChecked(mode == "draw")
         self.b_box.setChecked(mode == "box")
         self.sam_active = None
         self.canvas.set_mode(mode)
@@ -682,19 +669,14 @@ class MainWindow(QMainWindow):
     def toggle_view(self):
         if not self.layers:
             return
-        if self.b_view.isChecked():
+        if self.b_view.isChecked():  # the button names what a click will show
             if self.height_img is None:
                 self.height_img = processing.height_preview(self.layers[1])
             self.canvas.swap_image(self.height_img)
-            self.b_view.setText("COLOUR")
+            self.b_view.setText("RGB")
         else:
             self.canvas.swap_image(self.layers[0])
-            self.b_view.setText("HEIGHT")
-
-    def toggle_reviewed(self):
-        self.ann["reviewed"] = self.b_reviewed.isChecked()
-        self.sample.save_annotations(self.ann)
-        self._refresh_list_glyphs()
+            self.b_view.setText("DEPTH MAP")
 
     def _refresh_list_glyphs(self):
         for i in range(self.sample_list.count()):
@@ -868,7 +850,6 @@ class MainWindow(QMainWindow):
 
         def done(split):
             self.ann = s.annotations()
-            self.b_reviewed.setChecked(True)
             self._refresh_list_glyphs()
             self._update_model_readout()
             self.say(f"{s.id} added to the {self.project.config.crop} dataset ({split})")
@@ -889,6 +870,13 @@ class MainWindow(QMainWindow):
         if best and best["mask_map50_95"] is not None:
             lines.append(f"          MASK mAP50-95 {best['mask_map50_95']:.3f}   mAP50 {best['mask_map50']:.3f}")
         self.model_readout.setText("\n".join(lines))
+
+    def view_dataset(self):
+        d = DatasetDialog(self.project, self)
+        d.openSample.connect(lambda sid: self._refresh_samples(select_id=sid))
+        d.exec()
+        self._refresh_list_glyphs()
+        self._update_model_readout()
 
     def train_dialog(self):
         c = ml.dataset_counts(self.project)
@@ -931,7 +919,8 @@ class SettingsDialog(QDialog):
         for k, v in sam.MODELS.items():
             self.sam_model.addItem(v, k)
         self.sam_model.setCurrentIndex(max(0, self.sam_model.findData(s.sam_model)))
-        self.sam_refine = button("on", checkable=True, tip="Redraw every outline with SAM after each detection")
+        self.sam_refine = button("on", checkable=True,
+                                 tip="DETECT finds the seeds, then SAM redraws every outline precisely")
         self.sam_refine.setChecked(s.sam_refine)
         self.sam_refine.toggled.connect(lambda on: self.sam_refine.setText("ON" if on else "OFF"))
         self.sam_refine.setText("ON" if s.sam_refine else "OFF")
@@ -939,7 +928,7 @@ class SettingsDialog(QDialog):
                          ("STAGE", self.stage[0]), ("CAMERA", self.camera), ("SEED WIDTH", self.seed_width),
                          ("MIN THICKNESS", self.min_thick), ("MIN AREA", self.min_area),
                          ("DEPTH FROM", self.min_depth), ("DEPTH TO", self.max_depth), ("MODEL CONF", self.conf),
-                         ("SAM MODEL", self.sam_model), ("SAM AFTER DETECT", self.sam_refine)):
+                         ("SAM MODEL", self.sam_model), ("SAM REFINE", self.sam_refine)):
             form.addRow(caption(label), w)
         row = QHBoxLayout()
         row.addStretch(1)

@@ -16,8 +16,20 @@ BLUE = "#59b0ff"
 SANS = "Century Gothic, Futura, Segoe UI"
 MONO = "Consolas, Cascadia Mono, monospace"
 
-# polygon colours by status
-STATUS_COLOURS = {"auto": TEXT, "edited": BLUE, "manual": RED}
+# Instance colours: a twelve-colour swatch after the Discovery One's displays (HAL red,
+# instrument amber, readout blues and greens), ordered so neighbours alternate warm/cool.
+PALETTE = ["#ff3b30", "#5ac8fa", "#ffb000", "#af52de", "#a3e635", "#ff6b9a",
+           "#00c7be", "#ff7a1a", "#3d7bff", "#ffd60a", "#e040fb", "#6ee7b7"]
+
+
+def palette(i):
+    return PALETTE[i % len(PALETTE)]
+
+
+def palette_bgr(i):
+    h = palette(i).lstrip("#")
+    r, g, b = (int(h[k:k + 2], 16) for k in (0, 2, 4))
+    return (b, g, r)
 
 QSS = f"""
 * {{

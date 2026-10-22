@@ -40,7 +40,7 @@ class Settings:
     scale: float = 0.5         # stereo matching scale
     model_conf: float = 0.35
     sam_model: str = "mobile_sam.pt"
-    sam_refine: bool = False   # redraw every outline with SAM after detection
+    sam_refine: bool = True    # detection = find seeds (classic or model), then SAM redraws every outline
 
 
 @dataclass
