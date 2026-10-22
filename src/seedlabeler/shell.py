@@ -154,6 +154,7 @@ class Shell(QMainWindow):
         if not self.project:
             return
         if SettingsDialog(self.project, self).exec():
+            self.project.adopt_files()  # copy a newly chosen calibration/stage into the project
             self.project.save()
             self.camera.set_rig_file(self.project.rig_file)
             self._camera_args_applied = None

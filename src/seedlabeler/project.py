@@ -70,6 +70,7 @@ class Project:
                             settings=Settings(seed_width=prof["seed_width"], min_thickness=prof["min_thickness"]))
         p = cls(root, cfg)
         (root / "samples").mkdir(exist_ok=True)
+        p.adopt_files()
         p.save()
         return p
 
@@ -77,8 +78,45 @@ class Project:
     def open(cls, root):
         root = Path(root)
         d = json.loads((root / "project.json").read_text())
-        d["settings"] = Settings(**d.get("settings", {}))
-        return cls(root, ProjectConfig(**d))
+        known = Settings.__dataclass_fields__
+        d["settings"] = Settings(**{k: v for k, v in d.get("settings", {}).items() if k in known})
+        p = cls(root, ProjectConfig(**d))
+        if p.adopt_files():
+            p.save()
+        return p
+
+    def adopt_files(self):
+        """Copy calibration, its rig.json and the stage file into the project; store relative paths.
+
+        A project then opens on any PC wherever the folder lands (e.g. another
+        machine's OneDrive path). Returns True if anything changed.
+        """
+        changed = False
+        dest = self.root / "calibration"
+        for attr in ("calib", "stage"):
+            val = getattr(self.config, attr)
+            if not val:
+                continue
+            src = Path(val)
+            if not src.is_absolute():
+                continue  # already inside the project
+            try:
+                rel = src.resolve().relative_to(self.root.resolve())
+                setattr(self.config, attr, rel.as_posix())
+                changed = True
+                continue
+            except ValueError:
+                pass
+            if not src.exists():
+                continue  # e.g. the old absolute path from another PC: keep it, nothing to copy
+            dest.mkdir(exist_ok=True)
+            target = dest / ("calib.npz" if attr == "calib" else "stage.npz")
+            shutil.copy2(src, target)
+            if attr == "calib" and (src.with_name("rig.json")).exists():
+                shutil.copy2(src.with_name("rig.json"), dest / "rig.json")
+            setattr(self.config, attr, target.relative_to(self.root).as_posix())
+            changed = True
+        return changed
 
     def save(self):
         (self.root / "project.json").write_text(json.dumps(asdict(self.config), indent=2))
@@ -98,7 +136,7 @@ class Project:
             beside = self.path(self.config.calib).with_name("rig.json")
             if beside.exists():
                 return beside
-        return self.root / "rig.json"
+        return self.root / "calibration" / "rig.json" if (self.root / "calibration").exists()             else self.root / "rig.json"
 
     @property
     def dataset_dir(self):

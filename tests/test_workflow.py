@@ -70,3 +70,23 @@ def test_swapped_pair_is_detected():
     L, R = read_image(left), read_image(right)
     assert processing.check_swapped(CALIB, L, R) is False
     assert processing.check_swapped(CALIB, R, L) is True
+
+
+def test_projects_are_portable(tmp_path):
+    """Calibration (+ rig.json) is copied into the project with relative paths; moved projects still open."""
+    import json
+    import shutil
+
+    rig_src = tmp_path / "rig_src"
+    rig_src.mkdir()
+    shutil.copy2(CALIB, rig_src / "calib.npz")
+    (rig_src / "rig.json").write_text(json.dumps({"left": "A", "right": "B"}))
+    p = Project.create(tmp_path / "proj", "portable", crop="almond", calib=str(rig_src / "calib.npz"))
+    assert p.config.calib == "calibration/calib.npz"
+    assert (p.root / "calibration" / "rig.json").exists() and p.rig_file == p.root / "calibration" / "rig.json"
+
+    moved = tmp_path / "elsewhere" / "proj"  # e.g. another PC's OneDrive path
+    shutil.move(str(p.root), str(moved))
+    shutil.rmtree(rig_src)  # the original calibration is gone on the new PC
+    q = Project.open(moved)
+    assert q.path(q.config.calib).exists() and json.loads(q.rig_file.read_text())["left"] == "A"

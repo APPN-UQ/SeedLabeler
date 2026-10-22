@@ -10,17 +10,38 @@ each crop and use it as the detector.
 Builds on [`sonyrx0`](../SonyRX0) (cameras, calibration, depth) and
 [`chickpea-seed`](../ChickpeaSeed) (stage, top-down view, segmentation, traits).
 
-## Install
+## Install (any Windows PC)
 
-```
-conda create -n seedlabeler python=3.11
-conda activate seedlabeler
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128   # RTX 50xx needs CUDA 12.8 builds
-pip install -e ../SonyRX0 -e ../ChickpeaSeed -e .[train,dev]
-pip uninstall -y opencv-python            # ultralytics pulls this in; it shadows opencv-contrib (aruco)
-pip install --force-reinstall --no-deps opencv-contrib-python==4.10.0.84
-seedlabeler                               # or: python -m seedlabeler [project_dir]
-```
+1. Get the three repos side by side in one folder: they are already together in
+   OneDrive (`uni_UQ_APPF/code/`), or clone them:
+   ```
+   git clone https://github.com/qmwnebrv/SonyRX0
+   git clone https://github.com/qmwnebrv/ChickpeaSeed
+   git clone https://github.com/qmwnebrv/SeedLabeler
+   ```
+2. Double-click **`SeedLabeler/setup.bat`**. It finds conda (offers to install
+   Miniconda if missing), creates the `seedlabeler` environment, installs PyTorch
+   for this PC's GPU (CUDA 12.8, 12.6 for older drivers, or CPU), installs the
+   three packages with the tested versions (`constraints.txt`), runs a self-test
+   and puts a **SeedLabeler** shortcut on the desktop. Run it again after a
+   `git pull`; options: `-Cpu`, `-EnvName name`, `-NoShortcut`.
+3. Plug in the cameras (PC Remote mode, data cables): no drivers or Sony software
+   needed.
+
+Without an NVIDIA GPU everything works, but SAM and detection are slower and
+training a model takes much longer.
+
+### Moving between PCs
+
+- **Projects are self-contained**: calibration, the camera left/right assignment
+  (`rig.json`) and the stage file are copied into `<project>/calibration/` and
+  stored as relative paths, so a project opens wherever its folder lands. Keep
+  projects in OneDrive to have them on both PCs.
+- **Code**: `git pull` in each repo (or let OneDrive sync), then run `setup.bat`
+  if dependencies changed.
+- Don't have the same project open on two PCs at once (OneDrive would merge the
+  two sets of edits badly).
+- SAM weights download again on each PC on first use (~40-150 MB).
 
 ## Screens and modes
 
