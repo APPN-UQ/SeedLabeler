@@ -1,52 +1,10 @@
-"""Live camera view.
-
-The thread owns the left camera for as long as live view runs (COM objects
-must stay on the thread that created them) and closes it cleanly when
-stopped, so a capture can open both cameras straight afterwards.
-depth_zone() gives the outline drawn over the view: where stereo gives depth.
+"""Live-view helpers. The camera service (camera.py) streams the frames;
+depth_zone() gives the outline drawn over them: where stereo gives depth.
 """
 import json
 import time
 
 import numpy as np
-from PySide6.QtCore import QThread, Signal
-
-
-class LiveThread(QThread):
-    frame = Signal(object)  # BGR image
-    failed = Signal(str)
-
-    def __init__(self, serial=None):
-        super().__init__()
-        self.serial = serial
-        self._stop = False
-
-    def stop(self):
-        self._stop = True
-        self.wait(5000)
-
-    def run(self):
-        import comtypes
-        from sonyrx0.camera.sony import RX0
-        from sonyrx0.camera.wpd_mtp import find_devices
-
-        comtypes.CoInitialize()
-        cam = None
-        try:
-            paths = find_devices()
-            if not paths:
-                raise RuntimeError("No camera found. Is it on, connected, and in PC Remote mode?")
-            path = next((p for p in paths if self.serial and self.serial in p), paths[0])
-            cam = RX0(path)
-            while not self._stop:
-                img = cam.liveview_frame()
-                if img is not None:
-                    self.frame.emit(img)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(f"{type(e).__name__}: {e}")
-        finally:
-            if cam is not None:
-                cam.close()
 
 
 def preview_res(project, preview_width=1024):

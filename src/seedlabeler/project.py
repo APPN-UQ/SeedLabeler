@@ -41,6 +41,7 @@ class Settings:
     model_conf: float = 0.35
     sam_model: str = "mobile_sam.pt"
     sam_refine: bool = True    # detection = find seeds (classic or model), then SAM redraws every outline
+    label_target: int = 20     # samples to label before training (hub's suggested workflow)
 
 
 @dataclass

@@ -22,41 +22,48 @@ pip install --force-reinstall --no-deps opencv-contrib-python==4.10.0.84
 seedlabeler                               # or: python -m seedlabeler [project_dir]
 ```
 
-## Workflow
+## Screens and modes
 
-1. **NEW** project → pick a folder → **SETTINGS**: crop, stereo calibration
-   (`calib.npz`), optional stage plane (`stage.npz`), camera settings, seed width,
-   minimum thickness.
-2. **LIVE** shows the left camera (~25 fps). The dashed red box is where the
-   stereo pair gives depth (computed from the calibration and the depth range or
-   stage file): keep seeds inside it. A tight depth range or a stage file widens
-   it. **DETECT** next to it outlines and counts seeds on the live view (a quick
-   2D framing aid, not a measurement).
-3. **SAMPLE ID**: scan a barcode (scanners type the code + Enter) or type an ID.
-   With **AUTO** on, the scan captures straight away under that ID; otherwise
-   press **CAPTURE** (cameras in PC Remote mode) or **IMPORT PAIR** (left image
-   first). Full detection then runs automatically (~10 s for a 15 MP pair).
-   Right-click a sample (or select it and press `Delete`) to **RENAME** or
-   **DELETE** it; renaming keeps its CSVs and dataset entries consistent.
-4. Review on the canvas, fix what's wrong (traits update after every edit):
+**Home**: recent projects, NEW PROJECT (name, location, crop, calibration,
+optional stage, camera settings) and OPEN PROJECT.
 
-   | | |
-   |---|---|
-   | Click | select a seed (also selects its row in the table, and vice versa) |
-   | Drag seed / white square | move the seed / a vertex |
-   | Double-click an edge | insert a vertex |
-   | Right-click a vertex | remove it |
-   | `Delete` | delete selected seeds |
-   | **DRAW** | click points, double-click or `Enter` to close, `Backspace` undo point, `Esc` cancel |
-   | Wheel, middle-drag or `Space`+drag, `F` | zoom, pan, fit |
-   | **BOX** (SAM) | drag a box around a seed, or just click a seed: SAM outlines it. Then click to include more, Shift-click / right-click to exclude |
-   | **SAM FIX** or `R` | redraw the selected seed with SAM from its own box (clicks then refine it) |
-   | **REFINE ALL** | redraw every automatic outline with SAM, prompted by its box (kept only where SAM broadly agrees) |
-   | **UNDO / REDO**, **HEIGHT** | edit history, colour/height view |
+**Hub** (after opening a project): counts (captured, to process, labelled
+samples and seeds, models), the **suggested workflow** with the next step
+highlighted, and the three modes. Switch modes any time from the top bar.
 
-   Outline colours: white = automatic, blue = edited, red = drawn by hand.
-5. **EXPORT CSV**: all samples into `exports/<project>_seeds.csv` and
-   `_summary.csv` (each sample's own CSVs are always in its folder).
+1. **LABEL**: capture and correct the first ~20 samples (target in SETTINGS).
+2. **TRAIN**: train a model for the crop on them (TRAIN NOW appears on the hub).
+3. **CAPTURE**: collect the rest quickly, no detection while working.
+4. **PROCESS**: batch-detect everything captured, check flagged samples, export.
+
+| Mode | For | |
+|---|---|---|
+| **LABEL** | building the model, deliberate | capture or import → detect + SAM → correct → ADD TO DATASET / VIEW DATASET → TRAIN |
+| **CAPTURE** | a technician, throughput | live view with the depth-zone box; scan barcode → capture → next; instant checks (both images, sharpness, exposure); session counts |
+| **PROCESS** | end of a session | table of samples with status, seeds, depth coverage and flags (LOW DEPTH, COUNT?, NO SEEDS, L/R FIXED); PROCESS NEW / PROCESS SELECTED in the background with progress; double-click to open in LABEL; EXPORT CSV |
+
+The cameras stay connected for the session (`camera.py`): live view, capture
+and settings share one connection, so a capture takes a few seconds and needs
+no reconnect. Camera settings from the project are applied before the first
+capture.
+
+### Editing in LABEL
+
+| | |
+|---|---|
+| Click | select a seed (also selects its row in the table, and vice versa) |
+| Drag seed / white square | move the seed / a vertex |
+| Double-click an edge | insert a vertex |
+| Right-click a vertex | remove it |
+| `Delete` | delete selected seeds |
+| **BOX** (SAM) | drag a box around a seed, or just click a seed: SAM outlines it. Then click to include more, Shift-click / right-click to exclude |
+| **SAM FIX** or `R` | redraw the selected seed with SAM (clicks then refine it) |
+| **REFINE ALL** | redraw every automatic outline with SAM |
+| Wheel, middle-drag or `Space`+drag, `F` | zoom, pan, fit |
+| **UNDO / REDO**, **DEPTH MAP / RGB** | edit history; switch view |
+
+Each seed is filled with its own colour; the table's status column shows
+· automatic, ~ edited, + added by hand. Right-click a sample to rename or delete it.
 
 ## SAM
 

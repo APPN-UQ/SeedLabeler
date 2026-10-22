@@ -87,13 +87,17 @@ def _wait(app, cond, timeout=60):
 def test_sam_box_click_and_refine(app, tmp_path):
     """Delete a seed, redraw it with a SAM box, refine with a click, refine all."""
     import cv2
-    from seedlabeler.app import MainWindow
+    from seedlabeler.shell import Shell
 
     left, right = _pair()
     p = Project.create(tmp_path / "proj", "t", crop="almond", calib=str(CALIB))
+    p.config.settings.sam_refine = False  # keep the classic outlines so a SAM redraw is visible
+    p.save()
     processing.detect(p, p.add_pair(left, right, "s1"))
-    w = MainWindow()
-    w.open_project(p.root)
+    shell = Shell()
+    shell.open_project(p.root)
+    shell.go("label")
+    w = shell.label
     n0 = len(w.ann["seeds"])
     target = np.array(w.ann["seeds"][5]["polygon"])
     x0, y0 = target.min(0)
@@ -103,7 +107,7 @@ def test_sam_box_click_and_refine(app, tmp_path):
     w.canvas.delete_selected()
     _wait(app, lambda: len(w.ann["seeds"]) == n0 - 1)
     w._set_mode("box")
-    _wait(app, lambda: not w.tasks, timeout=120)  # model preload
+    _wait(app, lambda: not shell.tasks, timeout=120)  # model preload
     w.canvas.boxDrawn.emit(x0 - 5, y0 - 5, x1 + 5, y1 + 5)
     _wait(app, lambda: len(w.ann["seeds"]) == n0 and not w._sam_busy)
     new = w.ann["seeds"][-1]
@@ -114,17 +118,45 @@ def test_sam_box_click_and_refine(app, tmp_path):
     cv2.fillPoly(b, [np.round(np.array(new["polygon"])).astype(np.int32)], 1)
     assert (a & b).sum() / (a | b).sum() > 0.85
 
-    # a click inside refines the same outline (no new seed)
     cx, cy = target.mean(0)
     w.canvas.pointClicked.emit(float(cx), float(cy), True)
     _wait(app, lambda: not w._sam_busy)
     assert len(w.ann["seeds"]) == n0 and w.sam_active["points"]
 
-    # refine all keeps the count and is undoable
     w.sam_refine_all()
-    _wait(app, lambda: not w.tasks, timeout=120)
+    _wait(app, lambda: not shell.tasks, timeout=120)
     assert len(w.ann["seeds"]) == n0
     assert any(s.get("sam") for s in w.ann["seeds"])
     w.do_undo()
     assert not any(s.get("sam") for s in w.ann["seeds"])
-    w.close()
+    shell.close()
+
+
+def test_hub_workflow_and_batch_process(app, tmp_path):
+    """Hub recommends LABEL first; PROCESS batch-detects captured samples."""
+    from seedlabeler.home import workflow_state
+    from seedlabeler.shell import Shell
+
+    left, right = _pair()
+    p = Project.create(tmp_path / "proj", "t", crop="almond", calib=str(CALIB))
+    p.config.settings.sam_refine = False
+    p.save()
+    for i in range(2):
+        p.add_pair(left, right, f"cap{i}")  # captured, not processed (rapid-capture style)
+    steps, mode, stats = workflow_state(p)
+    assert mode == "label" and steps[0][0] == "next" and stats["waiting"] == 2
+
+    shell = Shell()
+    shell.open_project(p.root)
+    shell.go("process")
+    shell.process.process_new()
+    _wait(app, lambda: shell.process.worker is None, timeout=300)
+    assert all(s.processed for s in p.samples())
+    assert len(p.samples()[0].annotations()["seeds"]) == 19
+    p.config.settings.label_target = 1
+    p.save()
+    from seedlabeler import ml
+    ml.add_to_dataset(p, p.samples()[0])
+    steps, mode, _ = workflow_state(p)
+    assert steps[0][0] == "done" and steps[1][0] == "next"  # labelled enough: train next
+    shell.close()

@@ -181,13 +181,29 @@ def dataset_counts(project):
     return out
 
 
+def dataset_summary(project):
+    """(samples, seeds) in the crop's dataset, counting each seed once (tiles overlap)."""
+    root = dataset_root(project, "rgb")
+    ids = {f.stem.split("__t")[0] for f in root.glob("labels/*/*.txt")}
+    samples = [s for s in project.samples() if s.id in ids and s.processed]
+    return len(samples), sum(len(s.annotations()["seeds"]) for s in samples)
+
+
 def sync_datasets(project):
     """(Re)write every dataset sample in both input formats with the current tiling."""
     done = 0
+    keep = set()
     for s in project.samples():
         if s.processed and s.annotations().get("in_dataset"):
             add_to_dataset(project, s)
+            keep.add(s.id)
             done += 1
+    # files of samples that were deleted, renamed or taken out of the dataset
+    for kind in INPUTS:
+        root = dataset_root(project, kind)
+        for f in list(root.glob("images/*/*")) + list(root.glob("labels/*/*.txt")):
+            if f.stem.split("__t")[0] not in keep:
+                f.unlink()
     return done
 
 

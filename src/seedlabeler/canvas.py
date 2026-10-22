@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPathItem, QGraphicsPixmap
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
                                QGraphicsView)
 
-from .style import BLACK, RED, TEXT, palette
+from .style import ACCENT, CANVAS, SURFACE, TEXT, palette
 
 
 def to_qimage(bgr):
@@ -42,8 +42,8 @@ class VertexHandle(QGraphicsRectItem):
         super().__init__(-s / 2, -s / 2, s, s, seed_item)
         self.seed_item, self.index = seed_item, index
         self.setFlags(QGraphicsItem.ItemIgnoresTransformations)
-        self.setPen(_pen(BLACK))
-        self.setBrush(QBrush(QColor(TEXT)))
+        self.setPen(_pen(TEXT))
+        self.setBrush(QBrush(QColor(SURFACE)))
         self.setCursor(Qt.SizeAllCursor)
         self.setZValue(10)
         self._dragging = False
@@ -177,7 +177,7 @@ class Canvas(QGraphicsView):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setBackgroundBrush(QColor(BLACK))
+        self.setBackgroundBrush(QColor(CANVAS))
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.RubberBandDrag)
@@ -240,7 +240,7 @@ class Canvas(QGraphicsView):
         for x, y in points[1:]:
             path.lineTo(QPointF(x, y))
         path.closeSubpath()
-        pen = _pen(RED, 1.5)
+        pen = _pen(ACCENT, 1.5)
         pen.setStyle(Qt.CustomDashLine)
         pen.setDashPattern([6, 6])
         self.guide_item = QGraphicsPathItem(path)
@@ -328,7 +328,7 @@ class Canvas(QGraphicsView):
             a, b = self._box_start[1], self.mapToScene(e.position().toPoint())
             if self._box_item is None:
                 self._box_item = QGraphicsRectItem()
-                pen = _pen(RED, 1.5)
+                pen = _pen(ACCENT, 1.5)
                 pen.setStyle(Qt.DashLine)
                 self._box_item.setPen(pen)
                 self._box_item.setZValue(25)
