@@ -49,11 +49,25 @@ seedlabeler                               # or: python -m seedlabeler [project_d
    | `Delete` | delete selected seeds |
    | **DRAW** | click points, double-click or `Enter` to close, `Backspace` undo point, `Esc` cancel |
    | Wheel, middle-drag or `Space`+drag, `F` | zoom, pan, fit |
+   | **BOX** (SAM) | drag a box around a seed, or just click a seed: SAM outlines it. Then click to include more, Shift-click / right-click to exclude |
+   | **SAM FIX** or `R` | redraw the selected seed with SAM from its own box (clicks then refine it) |
+   | **REFINE ALL** | redraw every automatic outline with SAM, prompted by its box (kept only where SAM broadly agrees) |
    | **UNDO / REDO**, **HEIGHT** | edit history, colour/height view |
 
    Outline colours: white = automatic, blue = edited, red = drawn by hand.
 5. **EXPORT CSV**: all samples into `exports/<project>_seeds.csv` and
    `_summary.csv` (each sample's own CSVs are always in its folder).
+
+## SAM
+
+SAM (Segment Anything) runs on a full-resolution crop around each prompt, then
+has its shadows trimmed with the height map. Pick the model in SETTINGS:
+MobileSAM (~30 ms per seed) or SAM 2.1 base (~100 ms, a little sharper);
+weights download once to `~/.seedlabeler/weights`. **SAM AFTER DETECT** runs
+REFINE ALL automatically after every detection: the detector finds the seeds,
+SAM draws them precisely. On the synthetic seeds, SAM matches the classic
+outlines' accuracy (within ~0.1 mm) and halves the seed-to-seed scatter in
+length.
 
 ## Models
 

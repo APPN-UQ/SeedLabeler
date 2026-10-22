@@ -39,6 +39,8 @@ class Settings:
     max_depth: float = 800.0
     scale: float = 0.5         # stereo matching scale
     model_conf: float = 0.35
+    sam_model: str = "mobile_sam.pt"
+    sam_refine: bool = False   # redraw every outline with SAM after detection
 
 
 @dataclass

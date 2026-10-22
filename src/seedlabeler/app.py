@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDial
                                QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from . import live, ml, processing, style
+from . import live, ml, processing, sam, style
 from .canvas import Canvas
 from .project import CROP_PROFILES, Project
 
@@ -76,6 +76,8 @@ class MainWindow(QMainWindow):
         self.tasks = set()
         self.proc = None
         self.live = None
+        self.sam_active = None  # the outline SAM is currently drawing: box, clicks, index
+        self._sam_busy = False
         self._remeasure_pending = False
         self._remeasure_timer = QTimer(self, singleShot=True, interval=250, timeout=self._remeasure)
         self._build()
@@ -152,16 +154,20 @@ class MainWindow(QMainWindow):
         tools = QHBoxLayout()
         self.b_select = button("select", lambda: self._set_mode("select"), checkable=True)
         self.b_draw = button("draw", lambda: self._set_mode("draw"), checkable=True)
+        self.b_box = button("box", lambda: self._set_mode("box"), checkable=True,
+                            tip="SAM: drag a box around a seed, or click a seed.\n"
+                                "Then click to include more, Shift/right-click to exclude.")
         self.b_select.setChecked(True)
+        self.b_samfix = button("sam fix", self.sam_resegment, tip="Redraw the selected seed with SAM (R)")
         self.b_delete = button("delete", lambda: self.canvas.delete_selected())
         self.b_undo = button("undo", self.do_undo)
         self.b_redo = button("redo", self.do_redo)
         self.b_view = button("height", self.toggle_view, checkable=True)
         self.b_fit = button("fit", lambda: self.canvas.fit())
-        for w in (self.b_select, self.b_draw):
+        for w in (self.b_select, self.b_draw, self.b_box):
             tools.addWidget(w)
         tools.addSpacing(16)
-        for w in (self.b_delete, self.b_undo, self.b_redo):
+        for w in (self.b_samfix, self.b_delete, self.b_undo, self.b_redo):
             tools.addWidget(w)
         tools.addStretch(1)
         self.b_live = button("live", self.toggle_live, checkable=True, tip="Live view from the left camera")
@@ -179,6 +185,9 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas()
         self.canvas.edited.connect(self._edited)
         self.canvas.seedSelected.connect(self._canvas_selected)
+        self.canvas.boxDrawn.connect(self._sam_box)
+        self.canvas.pointClicked.connect(self._sam_click)
+        self.canvas.resegmentRequested.connect(self.sam_resegment)
         centre.addWidget(self.canvas, 1)
         cw = QWidget()
         cw.setLayout(centre)
@@ -197,7 +206,10 @@ class MainWindow(QMainWindow):
         self.detector.activated.connect(self._detector_changed)
         det.addWidget(self.detector, 1)
         self.b_detect = button("detect", self.detect, primary=True)
+        self.b_refine = button("refine all", self.sam_refine_all,
+                               tip="Redraw every automatic outline with SAM, prompted by its box")
         det.addWidget(self.b_detect)
+        det.addWidget(self.b_refine)
         right.addLayout(det)
         rev = QHBoxLayout()
         self.b_reviewed = button("reviewed", self.toggle_reviewed, checkable=True,
@@ -271,8 +283,8 @@ class MainWindow(QMainWindow):
         if self.live is not None:
             processed = False  # no editing while the canvas shows the live view
         self.b_detect.setEnabled(has_s)
-        for w in (self.b_select, self.b_draw, self.b_delete, self.b_view, self.b_fit,
-                  self.b_reviewed, self.b_dataset):
+        for w in (self.b_select, self.b_draw, self.b_box, self.b_samfix, self.b_refine, self.b_delete,
+                  self.b_view, self.b_fit, self.b_reviewed, self.b_dataset):
             w.setEnabled(processed)
         self.b_undo.setEnabled(processed and bool(self.undo))
         self.b_redo.setEnabled(processed and bool(self.redo))
@@ -598,9 +610,17 @@ class MainWindow(QMainWindow):
         s, det = self.sample, self.project.config.detector
         conf = self.project.config.settings.model_conf
 
+        st = self.project.config.settings
+
         def work():
             fn = None if det == "classic" else ml.model_detector(self.project.path(det), conf)
-            return processing.detect(self.project, s, fn)
+            ann = processing.detect(self.project, s, fn)
+            if st.sam_refine and ann["seeds"]:
+                o, h, v = processing.load_layers(s)
+                ann["seeds"], _ = sam.refine_all(st.sam_model, o, ann["seeds"], h, s.meta()["res"])
+                s.save_annotations(ann)
+                processing.remeasure(self.project, s, ann, (o, h, v))
+            return ann
 
         def done(_ann):
             n = len(s.annotations()["seeds"])
@@ -613,8 +633,12 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode):
         self.b_select.setChecked(mode == "select")
         self.b_draw.setChecked(mode == "draw")
+        self.b_box.setChecked(mode == "box")
+        self.sam_active = None
         self.canvas.set_mode(mode)
         self.canvas.setFocus()
+        if mode == "box":
+            self._sam_preload()
 
     def _edited(self, seeds):
         self.undo.append(self.ann["seeds"])
@@ -677,6 +701,111 @@ class MainWindow(QMainWindow):
             it = self.sample_list.item(i)
             s = next(x for x in self.project.samples() if str(x.path) == it.data(Qt.UserRole))
             it.setText(f"{SAMPLE_GLYPH[s.status()]}  {s.id}")
+
+    # ------------------------------------------------------------ SAM
+    def _sam_preload(self):
+        name = self.project.config.settings.sam_model
+        if name not in sam._models:
+            self.run_task(sam.get_model, name, msg=f"loading {sam.MODELS.get(name, name)}",
+                          done=lambda _m: self.say("sam ready"))
+
+    def _sam_run(self, box, points, labels, on_poly):
+        """Prompt SAM off the GUI thread; one prompt at a time."""
+        if self._sam_busy or not self.layers:
+            return
+        self._sam_busy = True
+        st, res = self.project.config.settings, self.sample.meta()["res"]
+        o, h, _ = self.layers
+
+        def done(poly):
+            self._sam_busy = False
+            if poly is None:
+                self.say("sam found nothing there")
+            else:
+                on_poly(poly.tolist())
+
+        def failed_reset(_e=None):
+            self._sam_busy = False
+
+        t = self.run_task(sam.segment, st.sam_model, o, box, points, labels, h, res,
+                          seed_px=st.seed_width / res, done=done, msg="sam")
+        t.failed.connect(failed_reset)
+
+    def _sam_box(self, x0, y0, x1, y1):
+        """New seed from a dragged box."""
+        box = (x0, y0, x1, y1)
+
+        def add(poly):
+            seeds = self.ann["seeds"] + [{"polygon": poly, "status": "manual"}]
+            self.sam_active = {"index": len(seeds) - 1, "box": box, "points": [], "labels": []}
+            self._edited(seeds)
+            self.canvas.set_seeds(seeds, keep_selection=len(seeds) - 1)
+
+        self._sam_run(box, None, None, add)
+
+    def _sam_click(self, x, y, positive):
+        """A click refines the active SAM outline, or (positive, none active) outlines the seed under it."""
+        a = self.sam_active
+        if a is None:
+            if not positive:
+                return
+
+            def add(poly):
+                seeds = self.ann["seeds"] + [{"polygon": poly, "status": "manual"}]
+                self.sam_active = {"index": len(seeds) - 1, "box": None, "points": [(x, y)], "labels": [1]}
+                self._edited(seeds)
+                self.canvas.set_seeds(seeds, keep_selection=len(seeds) - 1)
+
+            return self._sam_run(None, [(x, y)], [1], add)
+        pts, labs = a["points"] + [(x, y)], a["labels"] + [1 if positive else 0]
+
+        def replace(poly):
+            if a["index"] >= len(self.ann["seeds"]):
+                return
+            seeds = [dict(s) for s in self.ann["seeds"]]
+            status = seeds[a["index"]]["status"]
+            seeds[a["index"]] = {"polygon": poly, "status": "edited" if status == "auto" else status}
+            a["points"], a["labels"] = pts, labs
+            self._edited(seeds)
+            self.canvas.set_seeds(seeds, keep_selection=a["index"])
+
+        self._sam_run(a["box"], pts, labs, replace)
+
+    def sam_resegment(self):
+        """Redraw the selected seed with SAM, prompted by its own box; clicks then refine it."""
+        sel = [i for i, it in enumerate(self.canvas.items_) if it.isSelected()]
+        if len(sel) != 1 or not self.ann:
+            return self.say("select one seed first")
+        i = sel[0]
+        box = sam.bbox(self.ann["seeds"][i]["polygon"])
+
+        def replace(poly):
+            seeds = [dict(s) for s in self.ann["seeds"]]
+            status = seeds[i]["status"]
+            seeds[i] = {"polygon": poly, "status": "edited" if status == "auto" else status}
+            self.sam_active = {"index": i, "box": box, "points": [], "labels": []}
+            self._edited(seeds)
+            self.canvas.set_seeds(seeds, keep_selection=i)
+
+        self._sam_preload()
+        self._sam_run(box, None, None, replace)
+
+    def sam_refine_all(self):
+        if not self.ann or not self.ann["seeds"]:
+            return
+        st, res = self.project.config.settings, self.sample.meta()["res"]
+        o, h, _ = self.layers
+        s = self.sample
+
+        def done(result):
+            seeds, n = result
+            if s is self.sample:
+                self._edited(seeds)
+                self.canvas.set_seeds(seeds)
+                self.say(f"sam redrew {n} of {len(seeds)} outlines")
+
+        self.run_task(sam.refine_all, st.sam_model, o, self.ann["seeds"], h, res, done=done,
+                      msg="sam refining all outlines")
 
     # ------------------------------------------------------------ table
     def _load_table(self):
@@ -798,10 +927,19 @@ class SettingsDialog(QDialog):
         self.min_depth = self._spin(s.min_depth, 50, 3000, " mm")
         self.max_depth = self._spin(s.max_depth, 50, 3000, " mm")
         self.conf = self._spin(s.model_conf, 0.05, 0.95, "", step=0.05)
+        self.sam_model = QComboBox()
+        for k, v in sam.MODELS.items():
+            self.sam_model.addItem(v, k)
+        self.sam_model.setCurrentIndex(max(0, self.sam_model.findData(s.sam_model)))
+        self.sam_refine = button("on", checkable=True, tip="Redraw every outline with SAM after each detection")
+        self.sam_refine.setChecked(s.sam_refine)
+        self.sam_refine.toggled.connect(lambda on: self.sam_refine.setText("ON" if on else "OFF"))
+        self.sam_refine.setText("ON" if s.sam_refine else "OFF")
         for label, w in (("NAME", self.name), ("CROP", self.crop), ("CALIBRATION", self.calib[0]),
                          ("STAGE", self.stage[0]), ("CAMERA", self.camera), ("SEED WIDTH", self.seed_width),
                          ("MIN THICKNESS", self.min_thick), ("MIN AREA", self.min_area),
-                         ("DEPTH FROM", self.min_depth), ("DEPTH TO", self.max_depth), ("MODEL CONF", self.conf)):
+                         ("DEPTH FROM", self.min_depth), ("DEPTH TO", self.max_depth), ("MODEL CONF", self.conf),
+                         ("SAM MODEL", self.sam_model), ("SAM AFTER DETECT", self.sam_refine)):
             form.addRow(caption(label), w)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -847,6 +985,7 @@ class SettingsDialog(QDialog):
         c.camera_args = self.camera.text().strip()
         s.seed_width, s.min_thickness, s.min_area = self.seed_width.value(), self.min_thick.value(), self.min_area.value()
         s.min_depth, s.max_depth, s.model_conf = self.min_depth.value(), self.max_depth.value(), self.conf.value()
+        s.sam_model, s.sam_refine = self.sam_model.currentData(), self.sam_refine.isChecked()
         if c.detector != "classic" and f"/{c.crop}/" not in c.detector:
             c.detector = "classic"  # models belong to a crop
         super().accept()

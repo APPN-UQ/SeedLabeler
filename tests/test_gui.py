@@ -72,3 +72,59 @@ def test_rename_and_delete(tmp_path):
     p.delete_sample(r)
     assert not r.path.exists() and p.samples() == []
     assert not list(p.root.glob("datasets/*/labels/*/QR-000123*"))
+
+
+def _wait(app, cond, timeout=60):
+    import time
+    t = time.time()
+    while not cond() and time.time() - t < timeout:
+        app.processEvents()
+        time.sleep(0.02)
+    for _ in range(5):
+        app.processEvents()
+
+
+def test_sam_box_click_and_refine(app, tmp_path):
+    """Delete a seed, redraw it with a SAM box, refine with a click, refine all."""
+    import cv2
+    from seedlabeler.app import MainWindow
+
+    left, right = _pair()
+    p = Project.create(tmp_path / "proj", "t", crop="almond", calib=str(CALIB))
+    processing.detect(p, p.add_pair(left, right, "s1"))
+    w = MainWindow()
+    w.open_project(p.root)
+    n0 = len(w.ann["seeds"])
+    target = np.array(w.ann["seeds"][5]["polygon"])
+    x0, y0 = target.min(0)
+    x1, y1 = target.max(0)
+
+    w.canvas.select_index(5, centre=False)
+    w.canvas.delete_selected()
+    _wait(app, lambda: len(w.ann["seeds"]) == n0 - 1)
+    w._set_mode("box")
+    _wait(app, lambda: not w.tasks, timeout=120)  # model preload
+    w.canvas.boxDrawn.emit(x0 - 5, y0 - 5, x1 + 5, y1 + 5)
+    _wait(app, lambda: len(w.ann["seeds"]) == n0 and not w._sam_busy)
+    new = w.ann["seeds"][-1]
+    assert new["status"] == "manual"
+    shape = w.layers[0].shape[:2]
+    a, b = np.zeros(shape, np.uint8), np.zeros(shape, np.uint8)
+    cv2.fillPoly(a, [np.round(target).astype(np.int32)], 1)
+    cv2.fillPoly(b, [np.round(np.array(new["polygon"])).astype(np.int32)], 1)
+    assert (a & b).sum() / (a | b).sum() > 0.85
+
+    # a click inside refines the same outline (no new seed)
+    cx, cy = target.mean(0)
+    w.canvas.pointClicked.emit(float(cx), float(cy), True)
+    _wait(app, lambda: not w._sam_busy)
+    assert len(w.ann["seeds"]) == n0 and w.sam_active["points"]
+
+    # refine all keeps the count and is undoable
+    w.sam_refine_all()
+    _wait(app, lambda: not w.tasks, timeout=120)
+    assert len(w.ann["seeds"]) == n0
+    assert any(s.get("sam") for s in w.ann["seeds"])
+    w.do_undo()
+    assert not any(s.get("sam") for s in w.ann["seeds"])
+    w.close()

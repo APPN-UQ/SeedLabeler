@@ -7,7 +7,7 @@ to close, Backspace removes the last point, Esc cancels. Wheel zooms, middle
 drag or Space+drag pans, F fits the view.
 """
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPathItem, QGraphicsPixmapItem,
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
@@ -166,6 +166,9 @@ class SeedItem(QGraphicsPolygonItem):
 class Canvas(QGraphicsView):
     edited = Signal(list)       # new list of seeds after a completed edit
     seedSelected = Signal(int)  # index into the seed list, -1 for none
+    boxDrawn = Signal(float, float, float, float)  # BOX mode: a dragged rectangle (scene coords)
+    pointClicked = Signal(float, float, bool)       # BOX mode: a click (x, y, True = seed / False = not seed)
+    resegmentRequested = Signal()                   # R: redraw the selected seed with SAM
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -184,6 +187,8 @@ class Canvas(QGraphicsView):
         self._draw_path = None
         self._panning = None
         self._space = False
+        self._box_start = None
+        self._box_item = None
         self.scene().selectionChanged.connect(self._on_selection)
 
     # --- content ---
@@ -282,7 +287,7 @@ class Canvas(QGraphicsView):
         self.mode = mode
         self._cancel_draw()
         self.setDragMode(QGraphicsView.RubberBandDrag if mode == "select" else QGraphicsView.NoDrag)
-        self.viewport().setCursor(Qt.CrossCursor if mode == "draw" else Qt.ArrowCursor)
+        self.viewport().setCursor(Qt.ArrowCursor if mode == "select" else Qt.CrossCursor)
         for it in self.items_:
             it.setFlag(QGraphicsItem.ItemIsSelectable, mode == "select")
             it.setFlag(QGraphicsItem.ItemIsMovable, mode == "select")
@@ -336,6 +341,10 @@ class Canvas(QGraphicsView):
             self._draw_pts.append(self.mapToScene(e.position().toPoint()))
             self._update_draw_path()
             return
+        if self.mode == "box" and e.button() in (Qt.LeftButton, Qt.RightButton):
+            negative = e.button() == Qt.RightButton or bool(e.modifiers() & Qt.ShiftModifier)
+            self._box_start = (e.position(), self.mapToScene(e.position().toPoint()), negative)
+            return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -347,12 +356,35 @@ class Canvas(QGraphicsView):
             return
         if self.mode == "draw" and self._draw_pts:
             self._update_draw_path(self.mapToScene(e.position().toPoint()))
+        if self.mode == "box" and self._box_start is not None and not self._box_start[2]:
+            a, b = self._box_start[1], self.mapToScene(e.position().toPoint())
+            if self._box_item is None:
+                self._box_item = QGraphicsRectItem()
+                pen = _pen(RED, 1.5)
+                pen.setStyle(Qt.DashLine)
+                self._box_item.setPen(pen)
+                self._box_item.setZValue(25)
+                self.scene().addItem(self._box_item)
+            self._box_item.setRect(QRectF(a, b).normalized())
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._panning is not None:
             self._panning = None
-            self.viewport().setCursor(Qt.CrossCursor if self.mode == "draw" else Qt.ArrowCursor)
+            self.viewport().setCursor(Qt.ArrowCursor if self.mode == "select" else Qt.CrossCursor)
+            return
+        if self.mode == "box" and self._box_start is not None:
+            start_view, start, negative = self._box_start
+            self._box_start = None
+            if self._box_item is not None:
+                self.scene().removeItem(self._box_item)
+                self._box_item = None
+            end = self.mapToScene(e.position().toPoint())
+            if not negative and (e.position() - start_view).manhattanLength() > 6:
+                self.boxDrawn.emit(start.x(), start.y(), end.x(), end.y())
+            else:
+                self.pointClicked.emit(end.x(), end.y(), not negative)
             return
         super().mouseReleaseEvent(e)
 
@@ -378,11 +410,13 @@ class Canvas(QGraphicsView):
             self._update_draw_path()
         elif k == Qt.Key_F:
             self.fit()
+        elif k == Qt.Key_R:
+            self.resegmentRequested.emit()
         else:
             super().keyPressEvent(e)
 
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_Space and not e.isAutoRepeat():
             self._space = False
-            self.viewport().setCursor(Qt.CrossCursor if self.mode == "draw" else Qt.ArrowCursor)
+            self.viewport().setCursor(Qt.ArrowCursor if self.mode == "select" else Qt.CrossCursor)
         super().keyReleaseEvent(e)
