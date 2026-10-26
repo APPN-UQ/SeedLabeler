@@ -11,6 +11,7 @@ import queue
 import time
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 
@@ -26,11 +27,16 @@ class CameraService(QThread):
         self._q = queue.Queue()
         self._live = False
         self._stop = False
+        self._markers = None
+        self._left_id = None
         self.cams = None  # {"left": RX0, "right": RX0}
 
     # --- public, thread-safe ------------------------------------------------
     def set_rig_file(self, path):
         self._q.put(("rig", path))
+
+    def set_markers(self, layout):
+        self._markers = layout
 
     def set_live(self, on):
         self._live = bool(on)
@@ -42,6 +48,10 @@ class CameraService(QThread):
     def apply_settings(self, args, tag=None):
         """Camera settings as rx0-settings-style arguments, e.g. '--mode m --shutter 1/125 --iso 400'."""
         self._q.put(("settings", (args, tag)))
+
+    def focus_lock(self, tag=None):
+        """Autofocus on what's in front of both cameras, then lock to manual."""
+        self._q.put(("focus_lock", (None, tag)))
 
     def stop(self):
         self._stop = True
@@ -59,6 +69,7 @@ class CameraService(QThread):
         if self.rig_file and Path(self.rig_file).exists():
             left_serial = json.loads(Path(self.rig_file).read_text()).get("left")
         paths = sorted(paths, key=lambda p: 0 if left_serial and left_serial in p else 1)
+        self._left_id = paths[0]
         cams = {"left": RX0(paths[0]), "right": RX0(paths[1])}
         for c in cams.values():
             c.discard_pending()
@@ -119,6 +130,11 @@ class CameraService(QThread):
                 if name in wanted:
                     c.apply(name, wanted[name])
 
+    def _focus_lock(self):
+        self._ensure()
+        for c in self.cams.values():
+            c.focus_lock()
+
     def run(self):
         import comtypes
         comtypes.CoInitialize()
@@ -139,6 +155,8 @@ class CameraService(QThread):
                             self._capture(*arg)
                         elif cmd == "settings":
                             self._settings(arg[0])
+                        elif cmd == "focus_lock":
+                            self._focus_lock()
                     except Exception as e:  # noqa: BLE001 - report, reconnect next time
                         self._disconnect()
                         self.failed.emit(f"{type(e).__name__}: {e}", tag)
@@ -148,6 +166,15 @@ class CameraService(QThread):
                         self._ensure()
                         img = self.cams["left"].liveview_frame(timeout=0.5)
                         if img is not None:
+                            if self._markers is not None:
+                                import cv2
+                                from chickpea.stage import find_markers
+                                found = find_markers(img, self._markers)
+                                for corners in found.values():
+                                    cv2.polylines(img, [corners.astype(np.int32)], True, (60, 200, 60), 3)
+                                cv2.putText(img, f"markers {len(found)}/4", (16, img.shape[0] - 20),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                            (60, 200, 60) if len(found) >= 2 else (40, 40, 220), 2, cv2.LINE_AA)
                             self.frame.emit(img)
                     except Exception as e:  # noqa: BLE001
                         self._live = False

@@ -12,6 +12,7 @@ DIM = "#82868c"
 ACCENT = "#2f5f86"    # slate blue: active, selected, primary
 ACCENT_SOFT = "#e2eaf1"
 WARN = "#b7791f"      # amber, warnings only
+GUIDE = "#e05530"     # warm red-orange: depth zone, calibration guides
 
 SANS = "Segoe UI, Helvetica Neue, Arial"
 MONO = "Consolas, Cascadia Mono, monospace"

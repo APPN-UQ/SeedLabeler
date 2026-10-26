@@ -2,11 +2,11 @@
 
 One thread owns the device and keeps one pipeline running: the 12 MP colour
 image for captures, a half-size undistorted colour stream that the depth is
-aligned to (live view shows it too), and close-range subpixel stereo depth. A
-capture saves raw/rgb.jpg (full resolution) and raw/depth.npz: the per-pixel
-median of several depth frames (mm, 0 = unknown) aligned to the half-size
-colour, with the intrinsics of both images. The device's factory calibration
-is all it needs: no calibration session.
+aligned to (live view shows it too), and close-range stereo depth with a 7x7
+on-device median filter. A capture saves raw/rgb.jpg (full resolution) and
+raw/depth.npz: the per-pixel median of several depth frames (mm, 0 = unknown)
+aligned to the half-size colour, with the intrinsics of both images. The
+device's factory calibration is all it needs: no calibration session.
 """
 import queue
 import time
@@ -40,7 +40,12 @@ def median_depth(frames):
             warnings.simplefilter("ignore", RuntimeWarning)
             m = np.nanmedian(d, axis=0)
     m[(n < len(frames) / 2) | ~np.isfinite(m)] = 0
-    return np.round(m).astype(np.uint16)
+    out = np.round(m).astype(np.uint16)
+    valid = out[out > 0]
+    if valid.size:
+        centre = np.median(valid)
+        out[(out > 0) & ((out > centre * 1.5) | (out < centre * 0.5))] = 0
+    return out
 
 
 class OakService(QThread):
@@ -79,6 +84,9 @@ class OakService(QThread):
         """
         self._q.put(("settings", (args, tag)))
 
+    def focus_lock(self, tag=None):
+        pass  # OAK focus stays at the factory calibration position
+
     def stop(self):
         self._stop = True
         self.wait(8000)
@@ -98,9 +106,8 @@ class OakService(QThread):
         right = p.create(dai.node.Camera).build(S.CAM_C)
         stereo = p.create(dai.node.StereoDepth)
         stereo.setExtendedDisparity(True)  # halves the closest range: ~33 cm
-        stereo.setSubpixel(True)
-        stereo.setSubpixelFractionalBits(5)
         stereo.setLeftRightCheck(True)
+        stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
         left.requestOutput((1280, 800)).link(stereo.left)
         right.requestOutput((1280, 800)).link(stereo.right)
         full = rgb.requestOutput(FULL, dai.ImgFrame.Type.NV12, enableUndistortion=True)

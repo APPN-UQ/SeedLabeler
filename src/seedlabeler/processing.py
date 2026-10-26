@@ -143,14 +143,25 @@ def load_layers(sample):
         return ortho, z["height"].astype(np.float32), z["valid"]
 
 
+def _colour_corrected(project, ortho):
+    """Apply colour calibration if one exists for this project."""
+    cal = project.root / "calibration" / "colourcal.json"
+    if cal.exists():
+        from colourcal.correct import load_calibration, apply_correction
+        M = load_calibration(cal)
+        return apply_correction(ortho, M)
+    return ortho
+
+
 def remeasure(project, sample, ann, layers=None):
     """Traits from the current polygons; writes the sample's CSVs. Returns (seeds, summary)."""
     meta = sample.meta()
     ortho, height, _ = layers if layers is not None else load_layers(sample)
+    ortho_for_colour = _colour_corrected(project, ortho)
     polys = [s["polygon"] for s in ann["seeds"]]
     labels = polygons_to_labels(polys, ortho.shape[:2])
     res = meta["res"]
-    rows = measure_seeds(labels, ortho, height, res, meta["stage_distance"],
+    rows = measure_seeds(labels, ortho_for_colour, height, res, meta["stage_distance"],
                          pixel_offset=(meta["a0"] / res, meta["b0"] / res))
     seeds = pd.DataFrame(rows)
     if len(seeds):

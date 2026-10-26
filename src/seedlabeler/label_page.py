@@ -105,7 +105,9 @@ class LabelPage(QWidget):
         for w in (self.b_samfix, self.b_delete, self.b_undo, self.b_redo):
             tools.addWidget(w)
         tools.addStretch(1)
-        for w in (self.b_live, self.b_view, self.b_fit):
+        self.b_focus = button("set focus", self._focus_lock,
+                              tip="Autofocus both cameras on the stage, then lock to manual")
+        for w in (self.b_focus, self.b_live, self.b_view, self.b_fit):
             tools.addWidget(w)
         centre.addLayout(tools)
         self.canvas = Canvas()
@@ -192,6 +194,9 @@ class LabelPage(QWidget):
         self.sample = None
         self._refresh_models()
         self._refresh_samples()
+
+    def enter(self):
+        self.start_live()
 
     def leave(self):
         self.stop_live()
@@ -291,6 +296,10 @@ class LabelPage(QWidget):
         self.shell.capture_sample(self._take_id(), done)
         if was_live:
             self.b_live.setChecked(False)
+
+    def _focus_lock(self):
+        self.shell.camera.focus_lock()
+        self.shell.say("focusing … hold still")
 
     # ------------------------------------------------------------ live view
     def toggle_live(self):
@@ -693,7 +702,19 @@ class SettingsDialog(QDialog):
         for key, text in CAMERA_SYSTEMS.items():
             self.system.addItem(text, key)
         self.system.setCurrentIndex(max(0, self.system.findData(c.camera)))
+        self.system.setEnabled(False)
+        self.system.setToolTip("Camera system is set when the project is created and cannot be changed.")
         self.calib = self._path_row(c.calib, "Stereo calibration (*.npz)")
+        self._shell = parent  # Shell — for camera access in calibrate/verify
+        self.calib_indicator = QLabel("●")
+        self.calib_indicator.setFixedWidth(18)
+        self.calib_indicator.setToolTip("Calibration health: click VERIFY to check against the stage markers")
+        self.calib_indicator.setStyleSheet(f"color: {style.DIM};")
+        self.calib[0].layout().addWidget(self.calib_indicator)
+        self.calib[0].layout().addWidget(button("calibrate", self._run_calibration,
+                                                 tip="Guided calibration: capture ChArUco board pairs"))
+        self.calib[0].layout().addWidget(button("verify", self._verify_calibration,
+                                                 tip="Check calibration quality using the stage markers"))
         self.stage = self._path_row(c.stage, "Stage plane (*.npz)")
         self.camera = QLineEdit(c.camera_args)
         self.ground = QComboBox()
@@ -755,6 +776,7 @@ class SettingsDialog(QDialog):
     def _update_rows(self, _i=None):
         oak, markers = self.system.currentData() == "oak", self.ground.currentData() == "markers"
         self.calib[0].setEnabled(not oak)
+        self.calib_indicator.setVisible(not oak)
         self.stage[0].setEnabled(not oak and not markers)  # a stage file is in the RX0 rig's frame
         self.sheet[0].setEnabled(markers)
         self.bar.setEnabled(markers)
@@ -776,6 +798,68 @@ class SettingsDialog(QDialog):
                                 f"Print the {paper} sheet at 100% (\"Actual size\", not \"Fit\"), landscape, and tape "
                                 "it down flat.\n\nThen measure the 100 mm bar along its bottom edge with a ruler and "
                                 "enter it as 100 MM BAR PRINTED AS. Keep the seeds between the four markers.")
+
+    def _run_calibration(self):
+        if self.project.config.camera != "rx0":
+            return QMessageBox.information(self, "Calibration", "The OAK-D uses its factory calibration.")
+        from .stereo_calib import StereoCalibDialog
+        dlg = StereoCalibDialog(self._shell, self.project, self)
+        if dlg.exec() and dlg.result_path:
+            rel = dlg.result_path.relative_to(self.project.root).as_posix()
+            self.calib[1].setText(rel)
+
+    def _verify_calibration(self):
+        calib_path = self.calib[1].text().strip()
+        if not calib_path:
+            return QMessageBox.warning(self, "Verify", "No calibration file set.")
+        full = self.project.path(calib_path)
+        if not full.exists():
+            return QMessageBox.warning(self, "Verify", f"Calibration file not found:\n{full}")
+        self.calib_indicator.setStyleSheet(f"color: {style.DIM};")
+        self.calib_indicator.setToolTip("verifying ...")
+
+        def on_captured(info):
+            try:
+                self._shell.camera.captured.disconnect(on_captured)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._shell.camera.failed.disconnect(on_fail)
+            except (RuntimeError, TypeError):
+                pass
+            from sonyrx0.stereo.common import read_image
+            from .stereo_calib import verify_calibration
+            left, right = info.get("left"), info.get("right")
+            if not left or not right:
+                self._set_calib_indicator(None, "need a stereo pair to verify")
+                return
+            img_l, img_r = read_image(left), read_image(right)
+            quality, err, detail = verify_calibration(full, img_l, img_r)
+            self._set_calib_indicator(quality, detail)
+            import shutil
+            shutil.rmtree(info["left"].parent, ignore_errors=True)
+
+        def on_fail(msg, tag):
+            try:
+                self._shell.camera.captured.disconnect(on_captured)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._shell.camera.failed.disconnect(on_fail)
+            except (RuntimeError, TypeError):
+                pass
+            self._set_calib_indicator(None, f"capture failed: {msg}")
+
+        out = self.project.root / "calibration" / "_verify_tmp"
+        self._shell.camera.captured.connect(on_captured)
+        self._shell.camera.failed.connect(on_fail)
+        self._shell.camera.capture(out, tag="_verify_calib")
+
+    def _set_calib_indicator(self, quality, detail):
+        colors = {"good": style.ACCENT, "poor": "#e8a020", "bad": style.WARN}
+        c = colors.get(quality, style.DIM)
+        self.calib_indicator.setStyleSheet(f"color: {c}; font-size: 16px;")
+        self.calib_indicator.setToolTip(detail or "unknown")
 
     def _spin(self, v, lo, hi, suffix, step=0.5):
         w = QDoubleSpinBox()
@@ -815,7 +899,6 @@ class SettingsDialog(QDialog):
                                        "(.json, written next to the PDF): choose it, or PRINT SHEET to make one.")
         c, s = self.project.config, self.project.config.settings
         c.name, c.crop = self.name.text().strip() or c.name, self.crop.currentText().strip().lower() or c.crop
-        c.camera = self.system.currentData()
         c.calib, c.stage = self.calib[1].text().strip(), self.stage[1].text().strip()
         c.markers_sheet, c.markers_bar_mm = (sheet_file if markers else ""), self.bar.value()
         s.level_height = self.level.isChecked()

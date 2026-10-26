@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow, QM
                                QVBoxLayout, QWidget)
 
 from . import ml, style
+from .calibration import CalibrationDialog
 from .camera import CameraService
 from .oak import OakService
 from .capture_page import CapturePage
@@ -31,6 +32,7 @@ class Shell(QMainWindow):
         self._busy = set()
         self._pending = {}
         self._camera_args_applied = None
+        self._session_calibrated = False
         self.camera = self._camera_kind = None
 
         root = QWidget()
@@ -108,6 +110,10 @@ class Shell(QMainWindow):
             self.tabs["capture"].setChecked(False)
             return self.say("Rapid capture unlocks once this crop has a model: train one in LABEL or LOAD MODEL "
                             "on the hub.")
+        if key in ("label", "capture") and not self._session_calibrated:
+            self._session_calibrated = True
+            dlg = CalibrationDialog(self, self)
+            dlg.exec()  # skip or calibrate — either way the flag stays set
         if self.current and hasattr(self.pages[self.current], "leave"):
             self.pages[self.current].leave()
         self.current = key
@@ -265,12 +271,11 @@ class Shell(QMainWindow):
         c = self.project.config
         self.use_camera(c.camera)
         self.camera.set_rig_file(self.project.rig_file)
-        if c.camera == "oak":
-            try:
-                markers = self.project.markers
-            except Exception:  # noqa: BLE001 - a missing sheet file shows up at detection
-                markers = None
-            self.camera.set_markers(markers[0] if markers else None)  # live view outlines them
+        try:
+            markers = self.project.markers
+        except Exception:  # noqa: BLE001 - a missing sheet file shows up at detection
+            markers = None
+        self.camera.set_markers(markers[0] if markers else None)
         self._camera_args_applied = None
 
     def capture_sample(self, sample_id, done, failed=None):

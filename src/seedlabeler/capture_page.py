@@ -87,6 +87,9 @@ class CapturePage(QWidget):
         row.addWidget(self.b_auto)
         row.addStretch(1)
         right.addLayout(row)
+        self.b_focus = button("set focus", self._focus_lock,
+                              tip="Autofocus both cameras on the stage, then lock to manual")
+        row.addWidget(self.b_focus)
         self.b_capture = button("capture", self.capture, primary=True)
         self.b_capture.setMinimumHeight(48)
         right.addWidget(self.b_capture)
@@ -145,6 +148,10 @@ class CapturePage(QWidget):
             self._first = False
         else:
             self.canvas.swap_image(img)
+
+    def _focus_lock(self):
+        self.shell.camera.focus_lock()
+        self.shell.say("focusing … hold still")
 
     # --- capture ----------------------------------------------------------------
     def _id_entered(self):

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPathItem, QGraphicsPixmap
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
                                QGraphicsView)
 
-from .style import ACCENT, CANVAS, SURFACE, TEXT, palette
+from .style import ACCENT, CANVAS, GUIDE, SURFACE, TEXT, palette
 
 
 def to_qimage(bgr):
@@ -240,9 +240,9 @@ class Canvas(QGraphicsView):
         for x, y in points[1:]:
             path.lineTo(QPointF(x, y))
         path.closeSubpath()
-        pen = _pen(ACCENT, 1.5)
+        pen = _pen(GUIDE, 2.0)
         pen.setStyle(Qt.CustomDashLine)
-        pen.setDashPattern([6, 6])
+        pen.setDashPattern([8, 6])
         self.guide_item = QGraphicsPathItem(path)
         self.guide_item.setPen(pen)
         self.guide_item.setZValue(30)
