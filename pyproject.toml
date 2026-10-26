@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 train = ["ultralytics", "torch", "torchvision"]
+oak = ["depthai>=3.11,<4", "matplotlib"]  # OAK-D camera system; matplotlib writes the stage sheet
 dev = ["pytest"]
 
 [project.gui-scripts]

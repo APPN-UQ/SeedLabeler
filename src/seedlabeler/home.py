@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QFr
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 
 from . import ml, style
-from .project import CROP_PROFILES, Project
+from .project import CAMERA_ARGS_HINT, CAMERA_SYSTEMS, CROP_PROFILES, Project
 from .widgets import button, caption, label
 
 SETTINGS = ("APPF", os.environ.get("SEEDLABELER_SETTINGS", "SeedLabeler"))  # tests use their own
@@ -109,15 +109,22 @@ class NewProjectDialog(QDialog):
         self.crop = QComboBox()
         self.crop.setEditable(True)
         self.crop.addItems(list(CROP_PROFILES))
+        self.system = QComboBox()
+        for key, text in CAMERA_SYSTEMS.items():
+            self.system.addItem(text, key)
+        self.system.setCurrentIndex(max(0, self.system.findData(s.value("last_camera_system", "rx0"))))
         self.calib = self._path_row(s.value("last_calib", ""), filt="Stereo calibration (*.npz)")
         self.stage = self._path_row("", filt="Stage plane (*.npz)")
         self.camera = QLineEdit(s.value("last_camera_args", ""))
-        self.camera.setPlaceholderText("--mode m --shutter 1/125 --iso 400 (optional)")
         for lab, w in (("NAME", self.name), ("LOCATION", self.location[0]), ("CROP", self.crop),
-                       ("CALIBRATION", self.calib[0]), ("STAGE (OPTIONAL)", self.stage[0]),
-                       ("CAMERA SETTINGS", self.camera)):
+                       ("CAMERA SYSTEM", self.system), ("CALIBRATION", self.calib[0]),
+                       ("STAGE (OPTIONAL)", self.stage[0]), ("CAMERA SETTINGS", self.camera)):
             form.addRow(caption(lab), w)
         v.addLayout(form)
+        self.hint = label("", "dim", wrap=True)
+        v.addWidget(self.hint)
+        self.system.currentIndexChanged.connect(self._system_changed)
+        self._system_changed()
         self.error = label("", "warn")
         v.addWidget(self.error)
         row = QHBoxLayout()
@@ -126,6 +133,15 @@ class NewProjectDialog(QDialog):
         row.addWidget(button("create", self.create, primary=True))
         v.addLayout(row)
         self.setMinimumWidth(640)
+
+    def _system_changed(self, _i=None):
+        oak = self.system.currentData() == "oak"
+        self.calib[0].setEnabled(not oak)
+        self.stage[0].setEnabled(not oak)
+        self.camera.setPlaceholderText(CAMERA_ARGS_HINT["oak" if oak else "rx0"])
+        self.hint.setText("OAK-D: no calibration needed (it carries its factory calibration). Keep the stage "
+                          "40 cm or more from the camera. For a stage plane from corner markers, print the "
+                          "stage sheet in SETTINGS after creating the project." if oak else "")
 
     def _path_row(self, value, folder=False, filt=""):
         w = QWidget()
@@ -153,11 +169,13 @@ class NewProjectDialog(QDialog):
         if (folder / "project.json").exists():
             self.created = folder  # already a project: just open it
             return self.accept()
-        calib = self.calib[1].text().strip()
+        system = self.system.currentData()
+        calib = self.calib[1].text().strip() if system == "rx0" else ""
+        stage = self.stage[1].text().strip() if system == "rx0" else ""
         if calib and not Path(calib).exists():
             return self.error.setText("The calibration file doesn't exist.")
         crop = self.crop.currentText().strip().lower() or "custom"
-        p = Project.create(folder, name, crop=crop, calib=calib, stage=self.stage[1].text().strip())
+        p = Project.create(folder, name, crop=crop, calib=calib, stage=stage, camera=system)
         p.config.camera_args = self.camera.text().strip()
         p.save()
         s = QSettings(*SETTINGS)
@@ -165,6 +183,7 @@ class NewProjectDialog(QDialog):
         if calib:
             s.setValue("last_calib", calib)
         s.setValue("last_camera_args", p.config.camera_args)
+        s.setValue("last_camera_system", system)
         self.created = folder
         self.accept()
 

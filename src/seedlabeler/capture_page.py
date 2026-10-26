@@ -12,18 +12,24 @@ from .canvas import Canvas, to_qimage
 from .widgets import button, caption, card, label, vline
 
 
-def quality(left_path, right_path):
+def quality(sample):
     """Quick checks on a fresh capture: [(ok, text)], plus a small preview (BGR)."""
     checks = []
     imgs = []
-    for side, p in (("left", left_path), ("right", right_path)):
+    files = [("colour", sample.rgb)] if sample.is_rgbd else [("left", sample.left), ("right", sample.right)]
+    for side, p in files:
         img = cv2.imread(str(p), cv2.IMREAD_REDUCED_COLOR_4)
         if img is None:
             checks.append((False, f"{side} image missing"))
             continue
         imgs.append(img)
-    if len(imgs) == 2:
-        checks.append((True, "both images saved"))
+    if sample.is_rgbd and imgs:
+        with np.load(sample.depth_file) as z:
+            cov = float((z["depth"] > 0).mean())
+        checks.append((cov > 0.5, f"depth on {100 * cov:.0f}% of the view"
+                       + ("" if cov > 0.5 else ": too close (under 40 cm)? or a blank background")))
+    if len(imgs) == len(files):
+        checks.append((True, "images saved" if sample.is_rgbd else "both images saved"))
         sharp = []
         for img in imgs:
             g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -154,7 +160,7 @@ class CapturePage(QWidget):
         def done(sample):
             self.b_capture.setEnabled(True)
             self.session += 1
-            checks, preview = quality(sample.left, sample.right)
+            checks, preview = quality(sample)
             ok = all(c[0] for c in checks)
             mark = "✓" if ok else "!"
             self.recent.insertItem(0, f"{mark}  {sample.id}   {time.strftime('%H:%M:%S')}   {time.time() - t0:.1f}s")

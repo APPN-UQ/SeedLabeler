@@ -54,6 +54,8 @@ def depth_zone(project, preview_size, margin=0.02, samples=40):
     from sonyrx0.stereo.depth import StereoRig
 
     cfg, st = project.config, project.config.settings
+    if cfg.camera != "rx0":
+        return None  # the OAK's depth covers its whole colour view; its live view shows the distance instead
     try:
         calib = np.load(project.path(cfg.calib))
         rig = StereoRig(project.path(cfg.calib), st.scale)

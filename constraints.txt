@@ -19,3 +19,4 @@ requests==2.34.2
 psutil==7.2.2
 polars==2.0.0
 pytest==9.1.1
+depthai==3.11.0

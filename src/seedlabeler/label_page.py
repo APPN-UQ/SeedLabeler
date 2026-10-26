@@ -3,17 +3,18 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from . import live, ml, processing, sam
+from . import live, ml, processing, sam, sheet
 from .canvas import Canvas
 from .dataset_view import DatasetDialog
 from .detection import run_detection
-from .project import CROP_PROFILES
+from .project import CAMERA_ARGS_HINT, CAMERA_SYSTEMS, CROP_PROFILES
 from .widgets import button, caption, vline
 
 TABLE_COLS = [("#", "seed_id", "{:.0f}"), ("", "status", "{}"), ("LEN", "length_mm", "{:.2f}"),
@@ -74,7 +75,7 @@ class LabelPage(QWidget):
         idrow.addStretch(1)
         idrow.addWidget(self.b_import)
         left.addLayout(idrow)
-        self.b_capture = button("capture", self.capture, primary=True, tip="Fire both cameras, then detect")
+        self.b_capture = button("capture", self.capture, primary=True, tip="Capture (both RX0s, or the OAK-D), then detect")
         left.addWidget(self.b_capture)
         lw = QWidget()
         lw.setLayout(left)
@@ -96,7 +97,8 @@ class LabelPage(QWidget):
         self.b_redo = button("redo", self.do_redo)
         self.b_view = button("depth map", self.toggle_view, checkable=True)
         self.b_fit = button("fit", lambda: self.canvas.fit())
-        self.b_live = button("live", self.toggle_live, checkable=True, tip="Live view from the left camera")
+        self.b_live = button("live", self.toggle_live, checkable=True,
+                             tip="Live view (RX0: left camera; OAK-D: with the stage distance and corner markers)")
         for w in (self.b_select, self.b_box):
             tools.addWidget(w)
         tools.addSpacing(14)
@@ -175,6 +177,8 @@ class LabelPage(QWidget):
         for w in (self.b_import, self.b_capture, self.b_train, self.detector, self.b_live, self.sample_id,
                   self.b_auto, self.b_view_ds):
             w.setEnabled(has_p)
+        if has_p and self.project.config.camera == "oak":
+            self.b_import.setEnabled(False)  # an OAK sample is colour + depth from the camera, not a file pair
         self.b_detect.setEnabled(has_s)
         for w in (self.b_select, self.b_box, self.b_samfix, self.b_refine, self.b_delete,
                   self.b_view, self.b_fit, self.b_dataset):
@@ -685,10 +689,31 @@ class SettingsDialog(QDialog):
         self.crop.addItems(list(CROP_PROFILES))
         self.crop.setCurrentText(c.crop)
         self.crop.currentTextChanged.connect(self._profile)
+        self.system = QComboBox()
+        for key, text in CAMERA_SYSTEMS.items():
+            self.system.addItem(text, key)
+        self.system.setCurrentIndex(max(0, self.system.findData(c.camera)))
         self.calib = self._path_row(c.calib, "Stereo calibration (*.npz)")
         self.stage = self._path_row(c.stage, "Stage plane (*.npz)")
         self.camera = QLineEdit(c.camera_args)
-        self.camera.setPlaceholderText("--mode m --shutter 1/125 --iso 400")
+        self.ground = QComboBox()
+        self.ground.addItem("Stage file, else fit to the depth", "plane")
+        self.ground.addItem("Corner markers (stage sheet)", "markers")
+        self.ground.setToolTip("Corner markers: a printed sheet with an ArUco marker in each corner. They give the\n"
+                               "stage plane in every capture and correct the depth's scale; seeds go between them.")
+        self.ground.setCurrentIndex(1 if c.markers_sheet else 0)
+        self.sheet = self._path_row(c.markers_sheet, "Stage sheet layout (*.json)")
+        self.sheet[0].layout().addWidget(button("print sheet", self._print_sheet,
+                                                tip="Make a stage sheet (A4 or A3) to print"))
+        self.bar = self._spin(c.markers_bar_mm, 20, 200, " mm", step=0.5)
+        self.bar.setToolTip("Measure the sheet's 100 mm bar with a ruler after printing: printers often shrink\n"
+                            "the page (fit to page), and the markers' size sets every measurement's scale.")
+        self.level = button("on", checkable=True,
+                            tip="Measure height against the sheet around each seed instead of one plane.\n"
+                                "On for the OAK-D, whose depth bends by a few mm across the view.")
+        self.level.toggled.connect(lambda on: self.level.setText("ON" if on else "OFF"))
+        self.level.setChecked(s.level_height)
+        self.level.setText("ON" if s.level_height else "OFF")
         self.seed_width = self._spin(s.seed_width, 0.5, 50, " mm")
         self.min_thick = self._spin(s.min_thickness, 0, 20, " mm")
         self.min_area = self._spin(s.min_area, 0, 500, " mm²")
@@ -708,8 +733,10 @@ class SettingsDialog(QDialog):
         self.sam_refine.setChecked(s.sam_refine)
         self.sam_refine.toggled.connect(lambda on: self.sam_refine.setText("ON" if on else "OFF"))
         self.sam_refine.setText("ON" if s.sam_refine else "OFF")
-        for lab, w in (("NAME", self.name), ("CROP", self.crop), ("CALIBRATION", self.calib[0]),
-                       ("STAGE", self.stage[0]), ("CAMERA", self.camera), ("SEED WIDTH", self.seed_width),
+        for lab, w in (("NAME", self.name), ("CROP", self.crop), ("CAMERA SYSTEM", self.system),
+                       ("CALIBRATION", self.calib[0]), ("CAMERA", self.camera), ("GROUND PLANE", self.ground),
+                       ("STAGE", self.stage[0]), ("SHEET", self.sheet[0]), ("100 MM BAR PRINTED AS", self.bar),
+                       ("LEVEL HEIGHT", self.level), ("SEED WIDTH", self.seed_width),
                        ("MIN THICKNESS", self.min_thick), ("MIN AREA", self.min_area),
                        ("DEPTH FROM", self.min_depth), ("DEPTH TO", self.max_depth), ("MODEL CONF", self.conf),
                        ("SAM MODEL", self.sam_model), ("SAM REFINE", self.sam_refine),
@@ -720,7 +747,35 @@ class SettingsDialog(QDialog):
         row.addWidget(button("cancel", self.reject))
         row.addWidget(button("save", self.accept, primary=True))
         form.addRow(row)
-        self.setMinimumWidth(580)
+        self.setMinimumWidth(760)
+        self.system.currentIndexChanged.connect(self._update_rows)
+        self.ground.currentIndexChanged.connect(self._update_rows)
+        self._update_rows()
+
+    def _update_rows(self, _i=None):
+        oak, markers = self.system.currentData() == "oak", self.ground.currentData() == "markers"
+        self.calib[0].setEnabled(not oak)
+        self.stage[0].setEnabled(not oak and not markers)  # a stage file is in the RX0 rig's frame
+        self.sheet[0].setEnabled(markers)
+        self.bar.setEnabled(markers)
+        self.camera.setPlaceholderText(CAMERA_ARGS_HINT["oak" if oak else "rx0"])
+
+    def _print_sheet(self):
+        paper, ok = QInputDialog.getItem(self, "Stage sheet", "Paper size (landscape)", list(sheet.PAPERS), 0, False)
+        if not ok:
+            return
+        default = self.project.root / "calibration" / f"stage_sheet_{paper.lower()}.pdf"
+        f, _ = QFileDialog.getSaveFileName(self, "Save the stage sheet", str(default), "PDF (*.pdf)")
+        if not f:
+            return
+        js = sheet.write_sheet(f, paper)
+        self.sheet[1].setText(str(js))
+        self.bar.setValue(100.0)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(f))
+        QMessageBox.information(self, "Stage sheet",
+                                f"Print the {paper} sheet at 100% (\"Actual size\", not \"Fit\"), landscape, and tape "
+                                "it down flat.\n\nThen measure the 100 mm bar along its bottom edge with a ruler and "
+                                "enter it as 100 MM BAR PRINTED AS. Keep the seeds between the four markers.")
 
     def _spin(self, v, lo, hi, suffix, step=0.5):
         w = QDoubleSpinBox()
@@ -753,9 +808,17 @@ class SettingsDialog(QDialog):
             self.min_thick.setValue(p["min_thickness"])
 
     def accept(self):
+        markers = self.ground.currentData() == "markers"
+        sheet_file = self.sheet[1].text().strip()
+        if markers and not (sheet_file and self.project.path(sheet_file).exists()):
+            return QMessageBox.warning(self, "Project settings", "Corner markers need the stage sheet's layout "
+                                       "(.json, written next to the PDF): choose it, or PRINT SHEET to make one.")
         c, s = self.project.config, self.project.config.settings
         c.name, c.crop = self.name.text().strip() or c.name, self.crop.currentText().strip().lower() or c.crop
+        c.camera = self.system.currentData()
         c.calib, c.stage = self.calib[1].text().strip(), self.stage[1].text().strip()
+        c.markers_sheet, c.markers_bar_mm = (sheet_file if markers else ""), self.bar.value()
+        s.level_height = self.level.isChecked()
         c.camera_args = self.camera.text().strip()
         s.seed_width, s.min_thickness, s.min_area = self.seed_width.value(), self.min_thick.value(), self.min_area.value()
         s.min_depth, s.max_depth, s.model_conf = self.min_depth.value(), self.max_depth.value(), self.conf.value()

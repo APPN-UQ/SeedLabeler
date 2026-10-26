@@ -3,8 +3,10 @@
 <project>/
     project.json              name, crop profile, calibration, detector, settings
     rig.json                  which camera serial is left/right
+    calibration/              calib.npz (+ rig.json), stage.npz, stage_sheet.json (corner markers)
     samples/<id>/
-        raw/left.jpg, raw/right.jpg
+        raw/left.jpg, raw/right.jpg       stereo pair (RX0 rig)
+        raw/rgb.jpg, raw/depth.npz        or colour + aligned depth (OAK-D)
         ortho.png             top-down stage image (written by processing)
         height.npz            height above stage (mm, float16)
         meta.json             grid resolution/offset, stage distance, detector...
@@ -28,6 +30,9 @@ CROP_PROFILES = {
     "wheat": {"seed_width": 2.5, "min_thickness": 1.0},
     "custom": {"seed_width": 4.0, "min_thickness": 1.0},
 }
+CAMERA_SYSTEMS = {"rx0": "RX0 stereo pair", "oak": "OAK-D"}
+CAMERA_ARGS_HINT = {"rx0": "--mode m --shutter 1/125 --iso 400 (optional)",
+                    "oak": "--exposure 8000 --iso 400 --wb 5000 (optional; µs, K; focus stays calibrated)"}
 
 
 @dataclass
@@ -42,16 +47,20 @@ class Settings:
     sam_model: str = "mobile_sam.pt"
     sam_refine: bool = True    # detection = find seeds (classic or model), then SAM redraws every outline
     label_target: int = 20     # samples to label before training (hub's suggested workflow)
+    level_height: bool = False  # height against the sheet around each seed, not one plane (OAK depth bends)
 
 
 @dataclass
 class ProjectConfig:
     name: str
     crop: str = "chickpea"
+    camera: str = "rx0"        # camera system: "rx0" (stereo pair of RX0s) or "oak" (OAK-D)
     calib: str = ""
     stage: str = ""
+    markers_sheet: str = ""    # stage sheet layout (JSON): its corner markers give the stage plane
+    markers_bar_mm: float = 100.0  # the sheet's 100 mm bar as printed (printers often shrink the page)
     detector: str = "classic"  # "classic" or a model path relative to the project
-    camera_args: str = ""      # e.g. "--mode m --shutter 1/125 --iso 400"
+    camera_args: str = ""      # e.g. "--mode m --shutter 1/125 --iso 400" (RX0), "--exposure 8000 --iso 400" (OAK)
     settings: Settings = field(default_factory=Settings)
 
 
@@ -62,12 +71,13 @@ class Project:
 
     # --- persistence ---------------------------------------------------
     @classmethod
-    def create(cls, root, name, crop="chickpea", calib="", stage=""):
+    def create(cls, root, name, crop="chickpea", calib="", stage="", camera="rx0"):
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
         prof = CROP_PROFILES.get(crop, CROP_PROFILES["custom"])
-        cfg = ProjectConfig(name=name, crop=crop, calib=calib, stage=stage,
-                            settings=Settings(seed_width=prof["seed_width"], min_thickness=prof["min_thickness"]))
+        cfg = ProjectConfig(name=name, crop=crop, camera=camera, calib=calib, stage=stage,
+                            settings=Settings(seed_width=prof["seed_width"], min_thickness=prof["min_thickness"],
+                                              level_height=camera == "oak"))
         p = cls(root, cfg)
         (root / "samples").mkdir(exist_ok=True)
         p.adopt_files()
@@ -93,7 +103,8 @@ class Project:
         """
         changed = False
         dest = self.root / "calibration"
-        for attr in ("calib", "stage"):
+        targets = {"calib": "calib.npz", "stage": "stage.npz", "markers_sheet": "stage_sheet.json"}
+        for attr, name in targets.items():
             val = getattr(self.config, attr)
             if not val:
                 continue
@@ -110,7 +121,7 @@ class Project:
             if not src.exists():
                 continue  # e.g. the old absolute path from another PC: keep it, nothing to copy
             dest.mkdir(exist_ok=True)
-            target = dest / ("calib.npz" if attr == "calib" else "stage.npz")
+            target = dest / name
             shutil.copy2(src, target)
             if attr == "calib" and (src.with_name("rig.json")).exists():
                 shutil.copy2(src.with_name("rig.json"), dest / "rig.json")
@@ -139,6 +150,14 @@ class Project:
         return self.root / "calibration" / "rig.json" if (self.root / "calibration").exists()             else self.root / "rig.json"
 
     @property
+    def markers(self):
+        """(sheet layout, print scale) when the project uses the corner markers, else None."""
+        if not self.config.markers_sheet:
+            return None
+        from .sheet import load_layout
+        return load_layout(self.path(self.config.markers_sheet)), self.config.markers_bar_mm / 100.0
+
+    @property
     def dataset_dir(self):
         return self.root / "datasets" / self.config.crop
 
@@ -151,7 +170,8 @@ class Project:
         d = self.root / "samples"
         if not d.exists():
             return []
-        return [Sample(p) for p in sorted(d.iterdir()) if (p / "raw" / "left.jpg").exists()]
+        return [Sample(p) for p in sorted(d.iterdir())
+                if (p / "raw" / "left.jpg").exists() or (p / "raw" / "rgb.jpg").exists()]
 
     def new_sample_id(self, stem=None):
         base = re.sub(r"[^A-Za-z0-9_-]+", "_", stem) if stem else time.strftime("%Y%m%d_%H%M%S")
@@ -229,6 +249,10 @@ class Sample:
 
     left = property(lambda self: self.path / "raw" / "left.jpg")
     right = property(lambda self: self.path / "raw" / "right.jpg")
+    rgb = property(lambda self: self.path / "raw" / "rgb.jpg")           # OAK: colour image
+    depth_file = property(lambda self: self.path / "raw" / "depth.npz")  # OAK: depth aligned to it + intrinsics
+    is_rgbd = property(lambda self: self.rgb.exists())
+    image = property(lambda self: self.rgb if self.rgb.exists() else self.left)  # the colour image measured
     ortho_file = property(lambda self: self.path / "ortho.png")
     height_file = property(lambda self: self.path / "height.npz")
     meta_file = property(lambda self: self.path / "meta.json")

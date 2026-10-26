@@ -147,7 +147,7 @@ class ProcessPage(QWidget):
             fl = flags(s, med)
             cells = [s.id, STATUS_TEXT.get(st, st), "" if n is None else str(n),
                      f"{100 * meta['depth_coverage']:.0f}%" if "depth_coverage" in meta else "",
-                     "  ".join(fl), time.strftime("%Y-%m-%d %H:%M", time.localtime(s.left.stat().st_mtime))]
+                     "  ".join(fl), time.strftime("%Y-%m-%d %H:%M", time.localtime(s.image.stat().st_mtime))]
             for c, text in enumerate(cells):
                 it = QTableWidgetItem(text)
                 if c == 0:

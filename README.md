@@ -1,6 +1,7 @@
 # SeedLabeler
 
-Desktop app for stereo seed phenotyping with two Sony RX0 cameras.
+Desktop app for stereo seed phenotyping with two Sony RX0 cameras, or one
+Luxonis OAK-D (chosen per project: CAMERA SYSTEM).
 
 The deliverable is the **traits tables** (per seed and per sample: size, shape,
 colour, thickness, volume, uniformity). On the way, every corrected sample
@@ -26,10 +27,33 @@ Builds on [`sonyrx0`](../SonyRX0) (cameras, calibration, depth) and
    and puts a **SeedLabeler** shortcut on the desktop. Run it again after a
    `git pull`; options: `-Cpu`, `-EnvName name`, `-NoShortcut`.
 3. Plug in the cameras (PC Remote mode, data cables): no drivers or Sony software
-   needed.
+   needed. An OAK-D goes in a USB 3 (blue) port; no drivers either.
 
 Without an NVIDIA GPU everything works, but SAM and detection are slower and
 training a model takes much longer.
+
+### OAK-D
+
+One camera with colour (12 MP) and stereo depth; it carries its factory
+calibration, so there is no calibration session. Live view shows the distance
+to the stage: keep it **40 cm or more** (the depth starts at 33 cm, and seed tops
+must stay beyond that). A capture saves `raw/rgb.jpg` and `raw/depth.npz`
+(the median of 10 depth frames, aligned to the colour), in about 4 s. The colour
+camera's focus stays at its calibrated lens position, which keeps depth and
+colour aligned. CAMERA settings: `--exposure 8000 --iso 400 --wb 5000` (µs, K;
+`auto` for any). Its depth reads a few % off and bends by a few mm across the
+view, so OAK projects use the corner markers and LEVEL HEIGHT (below).
+
+### Corner markers (optional, for the lab)
+
+SETTINGS > GROUND PLANE > **Corner markers**, then **PRINT SHEET** (A4 or A3):
+a sheet with a small ArUco marker in each corner. Print at 100% ("Actual
+size"), tape it down flat, measure its **100 mm bar** with a ruler and enter it
+(printers often shrink the page: an A3 sheet fitted onto A4 measured 68 mm).
+Seeds go between the markers. In every capture the markers then give the stage
+plane, correct the depth's scale (it must agree with the markers' printed size),
+and limit detection to the sheet. **LEVEL HEIGHT** measures each seed against
+the sheet around it rather than one plane. Also `python tools/make_stage_sheet.py --paper A4`.
 
 ### Moving between PCs
 
@@ -132,9 +156,9 @@ distributing the app.
 ## Project layout
 
 ```
-<project>/project.json, rig.json
-<project>/samples/<id>/raw/{left,right}.jpg, ortho.png, height.npz, meta.json,
-                       annotations.json, <id>_seeds.csv, <id>_summary.csv
+<project>/project.json, rig.json, calibration/{calib.npz, stage.npz, stage_sheet.json}
+<project>/samples/<id>/raw/{left,right}.jpg (RX0) or raw/rgb.jpg + raw/depth.npz (OAK-D),
+                       ortho.png, height.npz, meta.json, annotations.json, <id>_seeds.csv, <id>_summary.csv
 <project>/datasets/<crop>/   <project>/models/<crop>/   <project>/exports/
 ```
 
@@ -142,5 +166,6 @@ distributing the app.
 
 `pytest tests -s` runs import → detect → edit → remeasure → dataset → export
 on a real almond pair, plus offscreen GUI checks (vertex dragging, sample
-rename/delete). `python tools/screenshot.py <project> out.png` renders
+rename/delete). `tests/test_markers.py` checks the stage sheet, the corner-marker
+plane, depth-scale correction and the OAK colour + depth path on a synthetic scene. `python tools/screenshot.py <project> out.png` renders
 the window offscreen.

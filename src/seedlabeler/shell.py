@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow, QM
 
 from . import ml, style
 from .camera import CameraService
+from .oak import OakService
 from .capture_page import CapturePage
 from .home import HomePage, HubPage, remember_project
 from .label_page import LabelPage, SettingsDialog, TrainDialog
@@ -30,11 +31,7 @@ class Shell(QMainWindow):
         self._busy = set()
         self._pending = {}
         self._camera_args_applied = None
-        self.camera = CameraService()
-        self.camera.captured.connect(self._captured)
-        self.camera.failed.connect(self._camera_failed)
-        self.camera.state.connect(self._camera_state)
-        self.camera.start()
+        self.camera = self._camera_kind = None
 
         root = QWidget()
         outer = QVBoxLayout(root)
@@ -57,7 +54,7 @@ class Shell(QMainWindow):
             bl.addWidget(b)
             self.tabs[key] = b
         bl.addStretch(1)
-        self.cam_label = label("cameras · not connected", "dim")
+        self.cam_label = label("", "dim")
         bl.addWidget(self.cam_label)
         bl.addSpacing(12)
         self.b_settings = button("settings", self.edit_settings)
@@ -97,6 +94,7 @@ class Shell(QMainWindow):
         self.hub.loadModel.connect(self.load_model)
         self.process.openInLabel.connect(self.open_in_label)
         self.current = None
+        self.use_camera("rx0")
         self.go_home()
 
     # ------------------------------------------------------------ navigation
@@ -138,8 +136,7 @@ class Shell(QMainWindow):
         except Exception as e:  # noqa: BLE001
             return self.error(f"Not a project: {e}")
         remember_project(self.project.root)
-        self.camera.set_rig_file(self.project.rig_file)
-        self._camera_args_applied = None
+        self._configure_camera()
         c = self.project.config
         self.project_label.setText(f"·   {c.name}   ·   {c.crop}")
         for k in ("hub", "label", "capture", "process"):
@@ -154,10 +151,11 @@ class Shell(QMainWindow):
         if not self.project:
             return
         if SettingsDialog(self.project, self).exec():
-            self.project.adopt_files()  # copy a newly chosen calibration/stage into the project
+            self.project.adopt_files()  # copy a newly chosen calibration/stage/sheet into the project
             self.project.save()
-            self.camera.set_rig_file(self.project.rig_file)
-            self._camera_args_applied = None
+            if self.current and hasattr(self.pages[self.current], "leave"):
+                self.pages[self.current].leave()  # live view, if on, is on the old camera
+            self._configure_camera()
             c = self.project.config
             self.project_label.setText(f"·   {c.name}   ·   {c.crop}")
             for k in ("hub", "label", "capture", "process"):
@@ -248,8 +246,35 @@ class Shell(QMainWindow):
         return self.proc
 
     # ------------------------------------------------------------ cameras
+    def use_camera(self, kind):
+        """Switch the camera service to a camera system: "rx0" (stereo pair) or "oak" (OAK-D)."""
+        if kind == self._camera_kind:
+            return
+        if self.camera is not None:
+            self.camera.stop()
+        self.camera = OakService() if kind == "oak" else CameraService()
+        self._camera_kind = kind
+        self._camera_args_applied = None
+        self.camera.captured.connect(self._captured)
+        self.camera.failed.connect(self._camera_failed)
+        self.camera.state.connect(self._camera_state)
+        self.camera.start()
+        self._camera_state("disconnected")
+
+    def _configure_camera(self):
+        c = self.project.config
+        self.use_camera(c.camera)
+        self.camera.set_rig_file(self.project.rig_file)
+        if c.camera == "oak":
+            try:
+                markers = self.project.markers
+            except Exception:  # noqa: BLE001 - a missing sheet file shows up at detection
+                markers = None
+            self.camera.set_markers(markers[0] if markers else None)  # live view outlines them
+        self._camera_args_applied = None
+
     def capture_sample(self, sample_id, done, failed=None):
-        """Fire both cameras into a new sample folder; done(Sample) when the images are in."""
+        """Fire the camera(s) into a new sample folder; done(Sample) when the images are in."""
         args = self.project.config.camera_args.strip()
         if args and self._camera_args_applied != args:
             self.camera.apply_settings(args)  # queued before the capture
@@ -282,8 +307,9 @@ class Shell(QMainWindow):
         self.error(msg)
 
     def _camera_state(self, state):
-        self.cam_label.setText({"connected": "cameras · connected", "capturing": "cameras · capturing",
-                                "disconnected": "cameras · not connected"}.get(state, state))
+        name = "oak-d" if self._camera_kind == "oak" else "cameras"
+        self.cam_label.setText(f"{name} · " + {"connected": "connected", "capturing": "capturing",
+                                               "disconnected": "not connected"}.get(state, state))
 
     def closeEvent(self, e):
         if self.current and hasattr(self.pages[self.current], "leave"):

@@ -61,14 +61,20 @@ Write-Host "  $conda"
 
 # ---------------------------------------------------------------- environment
 Step "Conda environment '$EnvName'"
-$envs = (& $conda env list --json | ConvertFrom-Json).envs
-$envDir = $envs | Where-Object { (Split-Path $_ -Leaf) -eq $EnvName } | Select-Object -First 1
+function CondaEnvs {
+    # Only the "envs" list: newer conda also emits per-env details keyed by path, which can
+    # differ only in case (Anaconda3 vs anaconda3) and break Windows PowerShell's ConvertFrom-Json
+    $json = (& $conda env list --json) -join "`n"
+    if ($json -notmatch '(?s)"envs"\s*:\s*(\[[^\]]*\])') { return @() }
+    $list = $Matches[1] | ConvertFrom-Json  # a variable, so returning it unrolls the array (PS 5.1)
+    return $list
+}
+$envDir = CondaEnvs | Where-Object { (Split-Path $_ -Leaf) -eq $EnvName } | Select-Object -First 1
 if (-not $envDir) {
     # conda-forge only: avoids the default channel's terms-of-service prompt
     & $conda create -y -n $EnvName -c conda-forge --override-channels python=3.11 pip
     if ($LASTEXITCODE) { Fail "Could not create the environment." }
-    $envs = (& $conda env list --json | ConvertFrom-Json).envs
-    $envDir = $envs | Where-Object { (Split-Path $_ -Leaf) -eq $EnvName } | Select-Object -First 1
+    $envDir = CondaEnvs | Where-Object { (Split-Path $_ -Leaf) -eq $EnvName } | Select-Object -First 1
 }
 $py = Join-Path $envDir "python.exe"
 if (-not (Test-Path $py)) { Fail "No python.exe in $envDir" }
@@ -98,7 +104,7 @@ Pip install torch torchvision --index-url $index
 
 # ---------------------------------------------------------------- packages
 Step "SonyRX0, ChickpeaSeed, SeedLabeler"
-Pip install -c (Join-Path $here "constraints.txt") -e (Join-Path $code "SonyRX0") -e (Join-Path $code "ChickpeaSeed") -e "$here[train,dev]"
+Pip install -c (Join-Path $here "constraints.txt") -e (Join-Path $code "SonyRX0") -e (Join-Path $code "ChickpeaSeed") -e "$here[train,dev,oak]"
 # Ultralytics pulls in opencv-python, which shadows opencv-contrib (needed for ArUco boards)
 & $py -m pip uninstall -y opencv-python opencv-python-headless | Out-Null
 Pip install --force-reinstall --no-deps "opencv-contrib-python==4.10.0.84"
@@ -112,7 +118,9 @@ from sonyrx0.camera.wpd_mtp import find_devices
 assert hasattr(cv2, "aruco"), "opencv-contrib missing (no aruco)"
 gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none (CPU)"
 print(f"  python ok | torch {torch.__version__} | GPU: {gpu} | OpenCV {cv2.__version__} | PySide6 {PySide6.__version__}")
-print(f"  cameras visible now: {len(find_devices())} (needs both on, PC Remote mode, data cables)")
+print(f"  RX0 cameras visible now: {len(find_devices())} (needs both on, PC Remote mode, data cables)")
+import depthai
+print(f"  OAK cameras visible now: {len(depthai.Device.getAllAvailableDevices())} (depthai {depthai.__version__})")
 '@
 # via a file: Windows PowerShell strips double quotes from arguments passed to programs
 $testFile = Join-Path $env:TEMP "seedlabeler_selftest.py"
