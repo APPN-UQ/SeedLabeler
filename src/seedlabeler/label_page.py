@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDial
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from . import live, ml, processing, sam, sheet
+from . import live, ml, processing, sam, sheet, style
 from .canvas import Canvas
 from .dataset_view import DatasetDialog
 from .detection import run_detection

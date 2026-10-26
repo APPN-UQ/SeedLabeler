@@ -166,15 +166,6 @@ class CameraService(QThread):
                         self._ensure()
                         img = self.cams["left"].liveview_frame(timeout=0.5)
                         if img is not None:
-                            if self._markers is not None:
-                                import cv2
-                                from chickpea.stage import find_markers
-                                found = find_markers(img, self._markers)
-                                for corners in found.values():
-                                    cv2.polylines(img, [corners.astype(np.int32)], True, (60, 200, 60), 3)
-                                cv2.putText(img, f"markers {len(found)}/4", (16, img.shape[0] - 20),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                                            (60, 200, 60) if len(found) >= 2 else (40, 40, 220), 2, cv2.LINE_AA)
                             self.frame.emit(img)
                     except Exception as e:  # noqa: BLE001
                         self._live = False
