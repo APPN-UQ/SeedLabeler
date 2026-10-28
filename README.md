@@ -1,24 +1,32 @@
+<div style="font-family: Arial, sans-serif;">
+
 # SeedLabeler
 
-Desktop app for stereo seed phenotyping with two Sony RX0 cameras, or one
-Luxonis OAK-D (chosen per project: CAMERA SYSTEM).
+![Project Status](https://img.shields.io/badge/status-ACTIVE-4caf50)
 
-The deliverable is the **traits tables** (per seed and per sample: size, shape,
-colour, thickness, volume, uniformity). On the way, every corrected sample
-becomes training data, so the app can train an instance-segmentation model for
-each crop and use it as the detector.
+Desktop app for stereo seed phenotyping. Supports Sony RX0 stereo pairs and Luxonis OAK-D cameras (chosen per project). Captures seed images, measures 3D traits (length, width, thickness, volume, colour, shape), trains per-crop instance-segmentation models, and exports publication-ready trait tables.
 
-Builds on [`sonyrx0`](../SonyRX0) (cameras, calibration, depth) and
-[`chickpea-seed`](../ChickpeaSeed) (stage, top-down view, segmentation, traits).
+## Project Information
 
-## Install (any Windows PC)
+**Project Title:** SeedLabeler -- 3D Seed Phenotyping Workstation
 
-1. Get the three repos side by side in one folder: they are already together in
-   OneDrive (`uni_UQ_APPF/code/`), or clone them:
+**Maintainer:** Daniel Smith (APPN UQ)
+
+## Project Description
+
+SeedLabeler turns a pair of cameras and a printed stage sheet into a seed measurement station. The deliverable is **traits tables** (per seed and per sample: size, shape, colour, thickness, volume, uniformity). Along the way, every corrected sample becomes training data, so the app trains an instance-segmentation model for each crop and uses it as the detector for future samples.
+
+Builds on [`chickpea-seed`](https://github.com/APPN-UQ/ChickpeaSeed) (stage, top-down view, segmentation, traits) and [`sonyrx0`](https://github.com/APPN-UQ/SonyRX0) (cameras, calibration, depth).
+
+## Installation and Setup
+
+### One-step install (any Windows PC)
+
+1. Get the three repos side by side in one folder:
    ```
-   git clone https://github.com/qmwnebrv/SonyRX0
-   git clone https://github.com/qmwnebrv/ChickpeaSeed
-   git clone https://github.com/qmwnebrv/SeedLabeler
+   git clone https://github.com/APPN-UQ/SonyRX0
+   git clone https://github.com/APPN-UQ/ChickpeaSeed
+   git clone https://github.com/APPN-UQ/SeedLabeler
    ```
 2. Double-click **`SeedLabeler/setup.bat`**. It finds conda (offers to install
    Miniconda if missing), creates the `seedlabeler` environment, installs PyTorch
@@ -29,143 +37,142 @@ Builds on [`sonyrx0`](../SonyRX0) (cameras, calibration, depth) and
 3. Plug in the cameras (PC Remote mode, data cables): no drivers or Sony software
    needed. An OAK-D goes in a USB 3 (blue) port; no drivers either.
 
-Without an NVIDIA GPU everything works, but SAM and detection are slower and
-training a model takes much longer.
+Without an NVIDIA GPU everything works, but SAM and detection are slower and training a model takes much longer.
 
-### OAK-D
+### Auto-updates
 
-One camera with colour (12 MP) and stereo depth; it carries its factory
-calibration, so there is no calibration session. Live view shows the distance
-to the stage: keep it **40 cm or more** (the depth starts at 33 cm, and seed tops
-must stay beyond that). A capture saves `raw/rgb.jpg` and `raw/depth.npz`
-(the median of 10 depth frames, aligned to the colour), in about 4 s. The colour
-camera's focus stays at its calibrated lens position, which keeps depth and
-colour aligned. CAMERA settings: `--exposure 8000 --iso 400 --wb 5000` (µs, K;
-`auto` for any). Its depth reads a few % off and bends by a few mm across the
-view, so OAK projects use the corner markers and LEVEL HEIGHT (below).
+The app checks GitHub Releases on startup. When a new version is available a dialog offers to download and install it automatically. Running from source? Just `git pull` and re-run `setup.bat` if dependencies changed.
 
-### Corner markers (optional, for the lab)
+## Usage
 
-SETTINGS > GROUND PLANE > **Corner markers**, then **PRINT SHEET** (A4 or A3):
-a sheet with a small ArUco marker in each corner. Print at 100% ("Actual
-size"), tape it down flat, measure its **100 mm bar** with a ruler and enter it
-(printers often shrink the page: an A3 sheet fitted onto A4 measured 68 mm).
-Seeds go between the markers. In every capture the markers then give the stage
-plane, correct the depth's scale (it must agree with the markers' printed size),
-and limit detection to the sheet. **LEVEL HEIGHT** measures each seed against
-the sheet around it rather than one plane. Also `python tools/make_stage_sheet.py --paper A4`.
+### Workflow
+
+| Step | Mode | What happens |
+|------|------|-------------|
+| 1 | **LABEL** | Capture ~20 samples, detect seeds, correct outlines, add to dataset |
+| 2 | **TRAIN** | Train the crop's model on them (hub or LABEL toolbar) |
+| 3 | **CAPTURE** | Collect the rest quickly with live view and barcode scanning |
+| 4 | **PROCESS** | Batch-detect everything, review flagged samples, export CSV |
+
+You can enter CAPTURE mode at any time to collect imagery. A trained model is only needed for PROCESS (batch detection). After training, the model becomes the detector so future LABEL samples start from its predictions. Add another batch, retrain, repeat.
+
+### Screens
+
+**Home**: recent projects, NEW PROJECT (name, location, crop, calibration, camera settings) and OPEN PROJECT.
+
+**Hub**: counts (captured, to process, labelled samples and seeds, models), the suggested workflow with the next step highlighted, and the four modes.
+
+**LABEL**: capture or import, detect + SAM, correct outlines, tag seeds, add to dataset, train. Switch between RGB and depth map views. Opacity slider controls seed overlay transparency.
+
+**CAPTURE**: live view with stage markers; scan barcode or type a sample ID, capture, next. Instant quality checks (images saved, sharpness, exposure, depth coverage).
+
+**PROCESS**: table of samples with status flags (LOW DEPTH, COUNT?, NO SEEDS, L/R FIXED). PROCESS NEW / PROCESS SELECTED in background. Double-click to open in LABEL. EXPORT CSV.
+
+### Editing seeds in LABEL
+
+| Action | Effect |
+|--------|--------|
+| Click | Select a seed (also selects its row in the table) |
+| Drag seed / white handle | Move the seed / a single vertex |
+| Double-click an edge | Insert a vertex |
+| Right-click a vertex | Remove it |
+| **Right-click a seed** | **Tag it with a label (broken, damaged, etc.)** |
+| `Delete` | Delete selected seeds |
+| **BOX** (SAM) | Drag a box around a seed, or click one; then click to include, Shift/right-click to exclude |
+| **SAM FIX** or `R` | Redraw the selected seed with SAM |
+| **REFINE ALL** | Redraw every automatic outline with SAM |
+| Wheel / middle-drag / `Space`+drag / `F` | Zoom, pan, fit |
+| Opacity slider | Adjust seed overlay transparency |
+
+### Seed labels
+
+Right-click any seed to tag it from a configurable list of labels (e.g. broken, damaged, discoloured, double, immature, shrivelled). Labels appear in the TAG column of the table and in the exported CSV. Configure the label list per project in **Settings > SEED LABELS** (comma-separated).
+
+Tagged seeds are outlined in a distinct colour so they stand out visually.
+
+### Camera systems
+
+**Sony RX0 stereo pair**: two cameras with stereo calibration. Requires a calibration session (guided wizard in Settings or `rx0-calibrate` CLI). Live view from the left camera.
+
+**OAK-D**: one camera with colour (12 MP) and stereo depth; uses its factory calibration. Live view shows distance to the stage -- keep it **40 cm or more** (depth starts at 33 cm). A capture saves `raw/rgb.jpg` and `raw/depth.npz` (median of 10 depth frames aligned to colour) in ~4 s. Camera settings: `--exposure 8000 --iso 400 --wb 5000` (us, K; `auto` for any).
+
+### Corner markers (recommended for the lab)
+
+**Settings > GROUND PLANE > Corner markers**, then **PRINT SHEET** (A4 or A3): a sheet with a small ArUco marker in each corner. Print at 100% ("Actual size"), tape it flat, measure its **100 mm bar** with a ruler and enter the measurement (printers often shrink: an A3 sheet fitted onto A4 measured 68 mm). Seeds go between the markers.
+
+In every capture the markers:
+- Give the stage plane automatically
+- Correct the depth scale (must agree with printed size)
+- Limit detection to the sheet area (tiles outside the markers are skipped)
+
+**LEVEL HEIGHT** measures each seed against the sheet around it rather than one flat plane (recommended for OAK-D, whose depth bends by a few mm across the view).
+
+### Colour calibration
+
+On first entry to LABEL or CAPTURE each session, a calibration dialog prompts you to photograph a ColorChecker chart. The resulting colour correction matrix is saved per project and **snapshotted into each sample** at detect time, so if you recalibrate after changing lighting conditions, old samples keep their original calibration and new samples use the new one.
+
+### SAM
+
+SAM (Segment Anything) runs on a full-resolution crop around each prompt; it separates seeds from their shadows. Pick the model in Settings: MobileSAM (~30 ms/seed) or SAM 2.1 base (~100 ms, sharper). Weights download once to `~/.seedlabeler/weights`. **SAM AFTER DETECT** runs REFINE ALL automatically after every detection.
+
+### Models
+
+- **ADD TO DATASET** writes corrected outlines in YOLO segmentation format with ~80/20 train/val split. Images are resampled to ~64 px across the seed width and cut into overlapping 640 px tiles.
+- **INPUT**: COLOUR or COLOUR + HEIGHT (height helps distinguish seeds from shadows/stains of the same colour).
+- **TRAIN** fine-tunes a pretrained model on the GPU in a background process with a live log.
+- Pick the detector (CLASSIC or a trained model with its validation mask mAP) next to DETECT.
+- Each crop gets its own dataset and models.
+
+Ultralytics YOLO is AGPL-3.0: fine for research use, check before distributing.
 
 ### Moving between PCs
 
-- **Projects are self-contained**: calibration, the camera left/right assignment
-  (`rig.json`) and the stage file are copied into `<project>/calibration/` and
-  stored as relative paths, so a project opens wherever its folder lands. Keep
-  projects in OneDrive to have them on both PCs.
-- **Code**: `git pull` in each repo (or let OneDrive sync), then run `setup.bat`
-  if dependencies changed.
-- Don't have the same project open on two PCs at once (OneDrive would merge the
-  two sets of edits badly).
-- SAM weights download again on each PC on first use (~40-150 MB).
+- **Projects are self-contained**: calibration, rig.json and stage file are stored inside `<project>/calibration/` as relative paths. Keep projects in OneDrive to have them on both PCs.
+- **Code**: `git pull` in each repo, then run `setup.bat` if dependencies changed. Or use the auto-updater in the packaged app.
+- Don't open the same project on two PCs at once.
+- SAM weights download again on each new PC (~40--150 MB).
 
-## Screens and modes
-
-**Home**: recent projects, NEW PROJECT (name, location, crop, calibration,
-optional stage, camera settings) and OPEN PROJECT.
-
-**Hub** (after opening a project): counts (captured, to process, labelled
-samples and seeds, models), the **suggested workflow** with the next step
-highlighted, and the three modes. Switch modes any time from the top bar.
-
-1. **LABEL**: capture and correct the first ~20 samples (target in SETTINGS).
-2. **TRAIN**: train the crop's model on them. The new model becomes the detector,
-   so the next samples you label start from its predictions. Keep going: correct
-   another batch, add it to the dataset, **RETRAIN** (default: continue from the
-   latest model, on the whole dataset, so it keeps what it learned). The hub
-   counts samples added since the last training and suggests RETRAIN NOW once
-   5 (or a quarter of the dataset) are new.
-3. **CAPTURE**: collect the rest quickly, no detection while working. Locked
-   until the crop has a model: train one, or **LOAD MODEL** on the hub (e.g.
-   best.pt from another project's run folder; its settings come with it).
-4. **PROCESS**: batch-detect everything captured, check flagged samples, export.
-
-| Mode | For | |
-|---|---|---|
-| **LABEL** | building the model, deliberate | capture or import → detect + SAM → correct → ADD TO DATASET / VIEW DATASET → TRAIN |
-| **CAPTURE** | a technician, throughput | live view with the depth-zone box; scan barcode → capture → next; instant checks (both images, sharpness, exposure); session counts |
-| **PROCESS** | end of a session | table of samples with status, seeds, depth coverage and flags (LOW DEPTH, COUNT?, NO SEEDS, L/R FIXED); PROCESS NEW / PROCESS SELECTED in the background with progress; double-click to open in LABEL; EXPORT CSV |
-
-The cameras stay connected for the session (`camera.py`): live view, capture
-and settings share one connection, so a capture takes a few seconds and needs
-no reconnect. Camera settings from the project are applied before the first
-capture.
-
-### Editing in LABEL
-
-| | |
-|---|---|
-| Click | select a seed (also selects its row in the table, and vice versa) |
-| Drag seed / white square | move the seed / a vertex |
-| Double-click an edge | insert a vertex |
-| Right-click a vertex | remove it |
-| `Delete` | delete selected seeds |
-| **BOX** (SAM) | drag a box around a seed, or just click a seed: SAM outlines it. Then click to include more, Shift-click / right-click to exclude |
-| **SAM FIX** or `R` | redraw the selected seed with SAM (clicks then refine it) |
-| **REFINE ALL** | redraw every automatic outline with SAM |
-| Wheel, middle-drag or `Space`+drag, `F` | zoom, pan, fit |
-| **UNDO / REDO**, **DEPTH MAP / RGB** | edit history; switch view |
-
-Each seed is filled with its own colour; the table's status column shows
-· automatic, ~ edited, + added by hand. Right-click a sample to rename or delete it.
-
-## SAM
-
-SAM (Segment Anything) runs on a full-resolution crop around each prompt; it
-separates seeds from their shadows by itself. Pick the model in SETTINGS:
-MobileSAM (~30 ms per seed) or SAM 2.1 base (~100 ms, a little sharper);
-weights download once to `~/.seedlabeler/weights`. **SAM AFTER DETECT** runs
-REFINE ALL automatically after every detection: the detector finds the seeds,
-SAM draws them precisely. On the synthetic seeds, SAM matches the classic
-outlines' accuracy (within ~0.1 mm) and halves the seed-to-seed scatter in
-length.
-
-## Models
-
-- **ADD TO DATASET** writes the sample's corrected outlines into the datasets of
-  the project's current crop, in YOLO segmentation format with an automatic
-  ~80/20 train/val split by sample. Images are resampled to ~64 px across the
-  crop's seed width (SETTINGS) and cut into overlapping 640 px tiles, so seeds
-  look the same size whatever the camera height. Two versions are written:
-  `datasets/<crop>/` (colour) and `datasets/<crop>-rgbh/` (brightness, colour
-  saturation and height above the stage packed into three channels).
-- **INPUT** in the training dialog picks COLOUR or COLOUR + HEIGHT. With height
-  the model can tell seeds from shadows and stains of the same colour. The model
-  records its input and tiling; detection rebuilds the same input automatically.
-- **TRAIN** fine-tunes a pretrained segmentation model (or continues from an
-  earlier one) on the GPU in a background process, with a live log. Runs land in
-  `models/<crop>/<run>/`.
-- Pick the detector (**CLASSIC** or a trained model, with its validation mask
-  mAP) next to **DETECT**. Switching crop in settings switches to that crop's
-  dataset and models, so each crop gets its own models.
-- Every polygon keeps its status (auto / edited / manual) and the original
-  automatic outlines are stored too, so detector accuracy can be measured
-  against the corrections.
-
-Ultralytics YOLO is AGPL-3.0: fine for research use, check before
-distributing the app.
-
-## Project layout
+## Project structure
 
 ```
-<project>/project.json, rig.json, calibration/{calib.npz, stage.npz, stage_sheet.json}
-<project>/samples/<id>/raw/{left,right}.jpg (RX0) or raw/rgb.jpg + raw/depth.npz (OAK-D),
-                       ortho.png, height.npz, meta.json, annotations.json, <id>_seeds.csv, <id>_summary.csv
-<project>/datasets/<crop>/   <project>/models/<crop>/   <project>/exports/
+<project>/
+  project.json                      # name, crop, calibration, detector, settings
+  calibration/
+    calib.npz                       # stereo calibration (RX0)
+    rig.json                        # which camera is left/right
+    stage_sheet.json                # marker layout
+    colourcal.json                  # colour calibration matrix
+  samples/<id>/
+    raw/left.jpg, right.jpg         # RX0 stereo pair
+    raw/rgb.jpg, depth.npz          # OAK-D colour + depth
+    ortho.png                       # top-down stage image
+    height.npz                      # height map + valid mask
+    meta.json                       # resolution, stage, detector used
+    annotations.json                # seed polygons, status, labels
+    colourcal.json                  # colour calibration snapshot for this sample
+    <id>_seeds.csv                  # per-seed traits
+    <id>_summary.csv                # per-sample summary
+  datasets/<crop>/                  # YOLO segmentation dataset
+  models/<crop>/                    # trained model runs
+  exports/                          # exported CSV files
 ```
 
 ## Tests
 
-`pytest tests -s` runs import → detect → edit → remeasure → dataset → export
-on a real almond pair, plus offscreen GUI checks (vertex dragging, sample
-rename/delete). `tests/test_markers.py` checks the stage sheet, the corner-marker
-plane, depth-scale correction and the OAK colour + depth path on a synthetic scene. `python tools/screenshot.py <project> out.png` renders
-the window offscreen.
+```
+pytest tests -s
+```
+
+Runs import, detect, edit, remeasure, dataset, export on a real almond pair, plus offscreen GUI checks. `tests/test_markers.py` checks the stage sheet, corner-marker plane, depth-scale correction and the OAK colour + depth path on a synthetic scene.
+
+## Contact
+
+**APPN UQ:** appn@uq.edu.au
+
+## Acknowledgments
+
+This research is supported by the Australian Plant Phenomics Network (APPN) and The University of Queensland. We acknowledge the use of the facilities, and scientific and technical assistance of APPN, which is supported by the Australian Government's National Collaborative Research Infrastructure Strategy (NCRIS).
+
+![APPN Logo](assets/APPN_logo.png)
+
+</div>
