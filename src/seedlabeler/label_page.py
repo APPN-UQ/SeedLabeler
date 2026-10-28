@@ -7,8 +7,8 @@ from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QSpinBox, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QSlider, QSpinBox,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from . import live, ml, processing, sam, sheet, style
 from .canvas import Canvas
@@ -17,7 +17,8 @@ from .detection import run_detection
 from .project import CAMERA_ARGS_HINT, CAMERA_SYSTEMS, CROP_PROFILES
 from .widgets import button, caption, vline
 
-TABLE_COLS = [("#", "seed_id", "{:.0f}"), ("", "status", "{}"), ("LEN", "length_mm", "{:.2f}"),
+TABLE_COLS = [("#", "seed_id", "{:.0f}"), ("", "status", "{}"), ("TAG", "label", "{}"),
+              ("LEN", "length_mm", "{:.2f}"),
               ("WID", "width_mm", "{:.2f}"), ("THK", "thickness_mm", "{:.2f}"), ("AREA", "area_mm2", "{:.1f}"),
               ("VOL", "volume_mm3", "{:.0f}"), ("AR", "aspect_ratio", "{:.2f}"), ("CIRC", "circularity", "{:.2f}"),
               ("L*", "L_mean", "{:.1f}"), ("a*", "a_mean", "{:.1f}"), ("b*", "b_mean", "{:.1f}")]
@@ -105,6 +106,15 @@ class LabelPage(QWidget):
         for w in (self.b_samfix, self.b_delete, self.b_undo, self.b_redo):
             tools.addWidget(w)
         tools.addStretch(1)
+        tools.addWidget(caption("opacity"))
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(0, 100)
+        self.opacity_slider.setValue(70)
+        self.opacity_slider.setFixedWidth(80)
+        self.opacity_slider.setToolTip("Seed overlay opacity")
+        self.opacity_slider.valueChanged.connect(self._opacity_changed)
+        tools.addWidget(self.opacity_slider)
+        tools.addSpacing(14)
         self.b_focus = button("set focus", self._focus_lock,
                               tip="Autofocus both cameras on the stage, then lock to manual")
         for w in (self.b_focus, self.b_live, self.b_view, self.b_fit):
@@ -113,6 +123,7 @@ class LabelPage(QWidget):
         self.canvas = Canvas()
         self.canvas.edited.connect(self._edited)
         self.canvas.seedSelected.connect(self._canvas_selected)
+        self.canvas.seedLabelled.connect(self._seed_labelled)
         self.canvas.boxDrawn.connect(self._sam_box)
         self.canvas.pointClicked.connect(self._sam_click)
         self.canvas.resegmentRequested.connect(self.sam_resegment)
@@ -192,6 +203,7 @@ class LabelPage(QWidget):
     def set_project(self, project):
         self.project = project
         self.sample = None
+        self.canvas.seed_labels = [""] + list(project.config.settings.seed_labels)
         self._refresh_models()
         self._refresh_samples()
 
@@ -432,6 +444,16 @@ class LabelPage(QWidget):
         if mode == "box":
             self._sam_preload()
 
+    def _seed_labelled(self, index, label):
+        if not self.ann or index >= len(self.ann["seeds"]):
+            return
+        seeds = [dict(s) for s in self.ann["seeds"]]
+        if label:
+            seeds[index]["label"] = label
+        else:
+            seeds[index].pop("label", None)
+        self._edited(seeds)
+
     def _edited(self, seeds):
         self.undo.append(self.ann["seeds"])
         self.redo.clear()
@@ -470,6 +492,9 @@ class LabelPage(QWidget):
 
         t = self.run_task(processing.remeasure, self.project, s, ann, layers, done=done)
         t._kind = "measure"
+
+    def _opacity_changed(self, value):
+        self.canvas.set_seed_opacity(value / 100.0)
 
     def toggle_view(self):
         if not self.layers:
@@ -601,6 +626,8 @@ class LabelPage(QWidget):
                 v = row.get(key, "")
                 if key == "status":
                     text = STATUS_GLYPH.get(v, "")
+                elif key == "label":
+                    text = str(v) if pd.notna(v) else ""
                 else:
                     text = fmt.format(v) if isinstance(v, (int, float, np.floating)) and np.isfinite(v) else "—"
                 it = QTableWidgetItem(text)
@@ -754,6 +781,8 @@ class SettingsDialog(QDialog):
         self.sam_refine.setChecked(s.sam_refine)
         self.sam_refine.toggled.connect(lambda on: self.sam_refine.setText("ON" if on else "OFF"))
         self.sam_refine.setText("ON" if s.sam_refine else "OFF")
+        self.seed_labels_edit = QLineEdit(", ".join(s.seed_labels))
+        self.seed_labels_edit.setToolTip("Comma-separated labels for tagging individual seeds (right-click a seed to tag it)")
         for lab, w in (("NAME", self.name), ("CROP", self.crop), ("CAMERA SYSTEM", self.system),
                        ("CALIBRATION", self.calib[0]), ("CAMERA", self.camera), ("GROUND PLANE", self.ground),
                        ("STAGE", self.stage[0]), ("SHEET", self.sheet[0]), ("100 MM BAR PRINTED AS", self.bar),
@@ -761,7 +790,7 @@ class SettingsDialog(QDialog):
                        ("MIN THICKNESS", self.min_thick), ("MIN AREA", self.min_area),
                        ("DEPTH FROM", self.min_depth), ("DEPTH TO", self.max_depth), ("MODEL CONF", self.conf),
                        ("SAM MODEL", self.sam_model), ("SAM REFINE", self.sam_refine),
-                       ("LABEL TARGET", self.target)):
+                       ("LABEL TARGET", self.target), ("SEED LABELS", self.seed_labels_edit)):
             form.addRow(caption(lab), w)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -907,6 +936,7 @@ class SettingsDialog(QDialog):
         s.min_depth, s.max_depth, s.model_conf = self.min_depth.value(), self.max_depth.value(), self.conf.value()
         s.sam_model, s.sam_refine = self.sam_model.currentData(), self.sam_refine.isChecked()
         s.label_target = self.target.value()
+        s.seed_labels = [x.strip() for x in self.seed_labels_edit.text().split(",") if x.strip()]
         if c.detector != "classic" and f"/{c.crop}/" not in c.detector:
             c.detector = "classic"  # models belong to a crop
         super().accept()

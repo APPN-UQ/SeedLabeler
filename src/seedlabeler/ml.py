@@ -339,7 +339,9 @@ def model_detector(model_path, conf=0.35, imgsz=None):
             f = res / work_res
             small = _resample(img, f, cv2.INTER_AREA)
             sh, sw = small.shape[:2]
-            grid = tile_grid(small.shape, overlap)
+            small_valid = _resample(valid.astype(np.uint8), f, cv2.INTER_NEAREST).astype(bool) if f < 1 else valid
+            grid = [pos for pos in tile_grid(small.shape, overlap)
+                    if small_valid[pos[1]:pos[1] + TILE, pos[0]:pos[0] + TILE].any()]
             half = overlap // 2
             for start in range(0, len(grid), 16):
                 batch = grid[start:start + 16]

@@ -7,7 +7,7 @@ from PySide6.QtCore import QProcess, Qt
 from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
                                QVBoxLayout, QWidget)
 
-from . import ml, style
+from . import __version__, ml, style
 from .calibration import CalibrationDialog
 from .camera import CameraService
 from .oak import OakService
@@ -24,7 +24,7 @@ MODES = [("hub", "HUB"), ("label", "LABEL"), ("capture", "CAPTURE"), ("process",
 class Shell(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SeedLabeler")
+        self.setWindowTitle(f"SeedLabeler {__version__}")
         self.resize(1600, 980)
         self.project = None
         self.tasks = set()
@@ -106,10 +106,6 @@ class Shell(QMainWindow):
     def go(self, key):
         if key != "home" and self.project is None:
             return
-        if key == "capture" and not self.has_model():
-            self.tabs["capture"].setChecked(False)
-            return self.say("Rapid capture unlocks once this crop has a model: train one in LABEL or LOAD MODEL "
-                            "on the hub.")
         if key in ("label", "capture") and not self._session_calibrated:
             self._session_calibrated = True
             dlg = CalibrationDialog(self, self)
@@ -123,8 +119,6 @@ class Shell(QMainWindow):
         for k, b in self.tabs.items():
             b.setChecked(k == key)
             b.setVisible(self.project is not None)
-        self.tabs["capture"].setEnabled(self.has_model())
-        self.tabs["capture"].setToolTip("" if self.has_model() else "Needs a trained model for this crop")
         self.b_settings.setVisible(self.project is not None)
         self.b_close.setVisible(self.project is not None)
 

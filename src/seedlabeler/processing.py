@@ -4,6 +4,7 @@ All geometry lives on the sample's top-down stage grid (ortho pixels, with
 `res` mm per pixel), the same space the traits are measured in.
 """
 import json
+import shutil
 
 import cv2
 import numpy as np
@@ -124,6 +125,9 @@ def detect(project, sample, model_detector=None):
             "depth_coverage": round(depth_cov, 3), "camera": "oak" if sample.is_rgbd else "rx0",
             "levelled": st.level_height, **ex["ground"], **ex["segmentation"]}
     sample.meta_file.write_text(json.dumps(meta, indent=2))
+    project_cal = project.root / "calibration" / "colourcal.json"
+    if project_cal.exists():
+        shutil.copy2(project_cal, sample.path / "colourcal.json")
 
     source = "classic" if model_detector is None else f"model:{cfg.detector}"
     polys = labels_to_polygons(ex["labels"], epsilon=max(1.0, 0.2 / grid.res))  # ~0.2 mm: few handles, exact enough
@@ -143,10 +147,18 @@ def load_layers(sample):
         return ortho, z["height"].astype(np.float32), z["valid"]
 
 
-def _colour_corrected(project, ortho):
-    """Apply colour calibration if one exists for this project."""
-    cal = project.root / "calibration" / "colourcal.json"
-    if cal.exists():
+def _colour_corrected(project, ortho, sample=None):
+    """Apply colour calibration: per-sample snapshot first, then project-level fallback."""
+    cal = None
+    if sample is not None:
+        per_sample = sample.path / "colourcal.json"
+        if per_sample.exists():
+            cal = per_sample
+    if cal is None:
+        project_cal = project.root / "calibration" / "colourcal.json"
+        if project_cal.exists():
+            cal = project_cal
+    if cal is not None:
         from colourcal.correct import load_calibration, apply_correction
         M = load_calibration(cal)
         return apply_correction(ortho, M)
@@ -157,7 +169,7 @@ def remeasure(project, sample, ann, layers=None):
     """Traits from the current polygons; writes the sample's CSVs. Returns (seeds, summary)."""
     meta = sample.meta()
     ortho, height, _ = layers if layers is not None else load_layers(sample)
-    ortho_for_colour = _colour_corrected(project, ortho)
+    ortho_for_colour = _colour_corrected(project, ortho, sample)
     polys = [s["polygon"] for s in ann["seeds"]]
     labels = polygons_to_labels(polys, ortho.shape[:2])
     res = meta["res"]
@@ -167,10 +179,12 @@ def remeasure(project, sample, ann, layers=None):
     if len(seeds):
         status = {i + 1: s["status"] for i, s in enumerate(ann["seeds"])}
         seeds.insert(1, "status", seeds.seed_id.map(status))
+        labels = {i + 1: s.get("label", "") for i, s in enumerate(ann["seeds"])}
+        seeds.insert(2, "label", seeds.seed_id.map(labels).replace("", np.nan))
     seeds.insert(0, "sample", sample.id)
     seeds.insert(1, "crop", project.config.crop)
     seeds.to_csv(sample.seeds_csv, index=False)
-    numeric = seeds.drop(columns=[c for c in ("sample", "crop", "status") if c in seeds])
+    numeric = seeds.drop(columns=[c for c in ("sample", "crop", "status", "label") if c in seeds])
     summary = summarise(numeric) if len(seeds) else pd.DataFrame()
     if len(summary):
         summary.insert(0, "sample", sample.id)

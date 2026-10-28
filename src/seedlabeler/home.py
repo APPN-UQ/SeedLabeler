@@ -379,9 +379,7 @@ class HubPage(QWidget):
             lab.setText(str(stats[k]))
         self.b_train.setVisible(steps[1][0] == "next")
         self.b_train.setText("RETRAIN NOW" if stats["has_model"] else "TRAIN NOW")
-        self.tiles["capture"].setEnabled(stats["has_model"])
-        self.tiles["capture"].setToolTip("" if stats["has_model"] else
-                                         "Train a model in LABEL (or LOAD MODEL) to unlock rapid capture.")
+        self.tiles["capture"].setEnabled(True)
         for k, b in self.tiles.items():
             b.setProperty("recommended", "true" if k == mode else "false")
             b.style().unpolish(b)

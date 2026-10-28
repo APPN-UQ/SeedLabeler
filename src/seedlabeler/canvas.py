@@ -11,7 +11,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPathItem, QGraphicsPixmapItem,
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
-                               QGraphicsView)
+                               QGraphicsView, QMenu)
 
 from .style import ACCENT, CANVAS, GUIDE, SURFACE, TEXT, palette
 
@@ -69,34 +69,44 @@ class VertexHandle(QGraphicsRectItem):
         e.accept()
 
 
+SEED_LABELS = ["", "broken", "damaged", "discoloured", "double", "immature", "shrivelled"]
+
+
 class SeedItem(QGraphicsPolygonItem):
-    def __init__(self, canvas, polygon, status, number):
+    def __init__(self, canvas, polygon, status, number, seed_label=""):
         super().__init__(QPolygonF([QPointF(x, y) for x, y in polygon]))
         self.canvas, self.status = canvas, status
+        self.seed_label = seed_label
         self.handles = []
         self.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable)
         self.setAcceptHoverEvents(True)
         self.colour = QColor(palette(number - 1))
-        self.label = QGraphicsSimpleTextItem(str(number), self)
-        self.label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
-        self.label.setBrush(QColor(TEXT))
+        self.number_label = QGraphicsSimpleTextItem(str(number), self)
+        self.number_label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.number_label.setBrush(QColor(TEXT))
         self._place_label()
         self._restyle()
 
     # --- appearance ---
     def _restyle(self, hover=False):
         fill = QColor(self.colour)
+        op = self.canvas._seed_opacity
         if self.isSelected():
             self.setPen(_pen(TEXT, 2.5))
-            fill.setAlpha(130)
+            fill.setAlpha(int(255 * min(op + 0.2, 1.0)))
+        elif self.seed_label:
+            self.setPen(_pen(GUIDE, 2.0))
+            fill.setAlpha(int(255 * (op + 0.15 if hover else op)))
         else:
             self.setPen(_pen(self.colour, 1.5))
-            fill.setAlpha(110 if hover else 70)
+            fill.setAlpha(int(255 * (op + 0.15 if hover else op)))
         self.setBrush(fill)
+        tip = self.seed_label if self.seed_label else ""
+        self.setToolTip(tip)
 
     def _place_label(self):
         c = self.polygon().boundingRect().center()
-        self.label.setPos(c)
+        self.number_label.setPos(c)
 
     def hoverEnterEvent(self, e):
         self._restyle(True)
@@ -165,10 +175,29 @@ class SeedItem(QGraphicsPolygonItem):
             self.insert_vertex(e.scenePos())
         super().mouseDoubleClickEvent(e)
 
+    def contextMenuEvent(self, e):
+        if self.canvas.mode != "select":
+            return
+        idx = self.canvas.items_.index(self)
+        menu = QMenu()
+        for lbl in self.canvas.seed_labels:
+            name = lbl if lbl else "(no label)"
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(self.seed_label == lbl)
+            action.setData(lbl)
+        chosen = menu.exec(e.screenPos())
+        if chosen is not None:
+            new_label = chosen.data()
+            self.seed_label = new_label
+            self._restyle()
+            self.canvas.seedLabelled.emit(idx, new_label)
+
 
 class Canvas(QGraphicsView):
     edited = Signal(list)       # new list of seeds after a completed edit
     seedSelected = Signal(int)  # index into the seed list, -1 for none
+    seedLabelled = Signal(int, str)  # (seed index, label) after right-click label assignment
     boxDrawn = Signal(float, float, float, float)  # BOX mode: a dragged rectangle (scene coords)
     pointClicked = Signal(float, float, bool)       # BOX mode: a click (x, y, True = seed / False = not seed)
     resegmentRequested = Signal()                   # R: redraw the selected seed with SAM
@@ -185,6 +214,8 @@ class Canvas(QGraphicsView):
         self.image_item = None
         self.guide_item = None
         self.items_ = []
+        self.seed_labels = list(SEED_LABELS)
+        self._seed_opacity = 0.7
         self.mode = "select"
         self._panning = None
         self._space = False
@@ -214,7 +245,7 @@ class Canvas(QGraphicsView):
             self.scene().removeItem(it)
         self.items_ = []
         for n, s in enumerate(seeds, start=1):
-            it = SeedItem(self, s["polygon"], s["status"], n)
+            it = SeedItem(self, s["polygon"], s["status"], n, s.get("label", ""))
             if self.mode != "select":
                 it.setFlag(QGraphicsItem.ItemIsSelectable, False)
                 it.setFlag(QGraphicsItem.ItemIsMovable, False)
@@ -249,11 +280,22 @@ class Canvas(QGraphicsView):
         self.scene().addItem(self.guide_item)
 
     def seeds(self):
-        return [{"polygon": it.scene_polygon(), "status": it.status} for it in self.items_]
+        out = []
+        for it in self.items_:
+            s = {"polygon": it.scene_polygon(), "status": it.status}
+            if it.seed_label:
+                s["label"] = it.seed_label
+            out.append(s)
+        return out
 
     def fit(self):
         if self.image_item is not None:
             self.fitInView(self.image_item, Qt.KeepAspectRatio)
+
+    def set_seed_opacity(self, opacity):
+        self._seed_opacity = max(0.0, min(1.0, opacity))
+        for it in self.items_:
+            it._restyle()
 
     def select_index(self, i, centre=True):
         self.scene().clearSelection()

@@ -48,6 +48,7 @@ class Settings:
     sam_refine: bool = True    # detection = find seeds (classic or model), then SAM redraws every outline
     label_target: int = 20     # samples to label before training (hub's suggested workflow)
     level_height: bool = False  # height against the sheet around each seed, not one plane (OAK depth bends)
+    seed_labels: list = field(default_factory=lambda: ["broken", "damaged", "discoloured", "double", "immature", "shrivelled"])
 
 
 @dataclass
@@ -170,8 +171,10 @@ class Project:
         d = self.root / "samples"
         if not d.exists():
             return []
-        return [Sample(p) for p in sorted(d.iterdir())
+        dirs = [p for p in d.iterdir()
                 if (p / "raw" / "left.jpg").exists() or (p / "raw" / "rgb.jpg").exists()]
+        dirs.sort(key=lambda p: p.stat().st_mtime)
+        return [Sample(p) for p in dirs]
 
     def new_sample_id(self, stem=None):
         base = re.sub(r"[^A-Za-z0-9_-]+", "_", stem) if stem else time.strftime("%Y%m%d_%H%M%S")
