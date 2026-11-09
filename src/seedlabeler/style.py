@@ -12,6 +12,8 @@ DIM = "#82868c"
 ACCENT = "#2f5f86"    # slate blue: active, selected, primary
 ACCENT_SOFT = "#e2eaf1"
 WARN = "#b7791f"      # amber, warnings only
+OK = "#2e7d32"        # green: camera connected
+BAD = "#c0392b"       # red: camera not connected
 GUIDE = "#e05530"     # warm red-orange: depth zone, calibration guides
 
 SANS = "Segoe UI, Helvetica Neue, Arial"

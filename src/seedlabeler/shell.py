@@ -303,12 +303,17 @@ class Shell(QMainWindow):
             shutil.rmtree(raw.parent, ignore_errors=True)
             if failed:
                 failed(msg)
-        self.error(msg)
+        if entry is None and msg.startswith("Live view"):
+            self.say(msg)  # the red camera label already shows it; no popup on every tab switch
+        else:
+            self.error(msg)
 
     def _camera_state(self, state):
         name = "oak-d" if self._camera_kind == "oak" else "cameras"
         self.cam_label.setText(f"{name} · " + {"connected": "connected", "capturing": "capturing",
                                                "disconnected": "not connected"}.get(state, state))
+        colour = style.BAD if state == "disconnected" else style.OK
+        self.cam_label.setStyleSheet(f"color: {colour}; font-weight: 600;")
 
     def closeEvent(self, e):
         if self.current and hasattr(self.pages[self.current], "leave"):
