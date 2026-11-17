@@ -4,21 +4,21 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+                               QStackedWidget, QVBoxLayout, QWidget)
 
 from . import __version__, ml, style
 from .calibration import CalibrationDialog
 from .camera import CameraService
 from .oak import OakService
 from .capture_page import CapturePage
-from .home import HomePage, HubPage, remember_project
+from .home import HomePage, HubPage, remember_project, workflow_state
 from .label_page import LabelPage, SettingsDialog, TrainDialog
 from .process_page import ProcessPage
 from .project import Project, Sample
 from .widgets import Task, button, hline, label
 
-MODES = [("hub", "HUB"), ("label", "LABEL"), ("capture", "CAPTURE"), ("process", "PROCESS")]
+MODES = [("hub", "HUB"), ("capture", "CAPTURE"), ("label", "LABEL"), ("process", "PROCESS")]
 
 
 class Shell(QMainWindow):
@@ -56,6 +56,10 @@ class Shell(QMainWindow):
             bl.addWidget(b)
             self.tabs[key] = b
         bl.addStretch(1)
+        self.ready_label = label("", "dim")  # readiness pill: what the workflow wants next
+        self.ready_label.setToolTip("Where the project is in the capture → label → train → process flow")
+        bl.addWidget(self.ready_label)
+        bl.addSpacing(18)
         self.cam_label = label("", "dim")
         bl.addWidget(self.cam_label)
         bl.addSpacing(12)
@@ -108,8 +112,9 @@ class Shell(QMainWindow):
             return
         if key in ("label", "capture") and not self._session_calibrated:
             self._session_calibrated = True
-            dlg = CalibrationDialog(self, self)
-            dlg.exec()  # skip or calibrate — either way the flag stays set
+            if QApplication.platformName() != "offscreen":  # headless tests: nobody can press SKIP
+                dlg = CalibrationDialog(self, self)
+                dlg.exec()  # skip or calibrate — either way the flag stays set
         if self.current and hasattr(self.pages[self.current], "leave"):
             self.pages[self.current].leave()
         self.current = key
@@ -121,6 +126,34 @@ class Shell(QMainWindow):
             b.setVisible(self.project is not None)
         self.b_settings.setVisible(self.project is not None)
         self.b_close.setVisible(self.project is not None)
+        self.refresh_gates()
+
+    def refresh_gates(self):
+        """The top-bar readiness pill and the soft gates on LABEL and PROCESS.
+
+        A gated tab is dimmed with a tooltip saying what is missing, but stays
+        clickable: the counts guide a new user through capture -> label ->
+        train -> process without locking anyone out.
+        """
+        if self.project is None:
+            self.ready_label.setText("")
+            return
+        _steps, _mode, st = workflow_state(self.project)
+        text, kind = st["pill"]
+        self.ready_label.setText(text)
+        self.ready_label.setStyleSheet(f"color: {style.OK if kind == 'ok' else style.WARN}; font-weight: 600;")
+        tips = {
+            "label": "" if st["label_open"] else
+            f"{st['samples']} of {st['target']} samples captured: capture more first, or label what is there",
+            "process": "" if st["process_open"] else
+            "No model yet: PROCESS would use the classic detector. Label and train in LABEL first for better outlines",
+        }
+        for k, tip in tips.items():
+            b = self.tabs[k]
+            b.setToolTip(tip)
+            b.setProperty("dim", "true" if tip else "false")
+            b.style().unpolish(b)
+            b.style().polish(b)
 
     def go_home(self):
         if self.project is not None and (self.tasks or self._pending):
@@ -294,6 +327,7 @@ class Shell(QMainWindow):
         done, _failed, raw = entry
         self.say(f"captured {sid} in {info['seconds']:.1f} s")
         done(Sample(raw.parent))
+        self.refresh_gates()
 
     def _camera_failed(self, msg, tag):
         entry = self._pending.pop(tag, None) if tag is not None else None

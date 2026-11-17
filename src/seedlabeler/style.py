@@ -67,6 +67,8 @@ QPushButton#secondary {{
 }}
 QPushButton#secondary:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
 QPushButton#tab {{ padding: 6px 12px; border-bottom: 2px solid transparent; }}
+QPushButton#tab[dim="true"] {{ color: #c4c1b9; }}
+QPushButton#tab[dim="true"]:hover {{ color: {DIM}; }}
 QPushButton#tab:checked {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
 QPushButton#tile {{
     background: {SURFACE}; border: 1px solid {LINE}; border-radius: 6px;

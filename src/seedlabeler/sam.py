@@ -68,6 +68,14 @@ def segment(model_name, ortho, box, points=None, point_labels=None, height=None,
     if r.masks is None or not len(r.masks.data):
         return None
     m = r.masks.data[0].cpu().numpy() > 0.5
+    click = None if use_box else (points[0][0] - cx0, points[0][1] - cy0)
+    poly = _mask_to_polygon(m, (x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0), res, click)
+    return None if poly is None else poly + [cx0, cy0]
+
+
+def _mask_to_polygon(m, box, res, click=None):
+    """Clean one SAM mask (crop coordinates) and trace it: the piece in the box (or under the click)."""
+    x0, y0, x1, y1 = box
     # No height-based shadow trim here: SAM separates objects by shape and
     # texture and already leaves shadows out; stereo depth is unreliable along
     # seed edges, so trimming on it only cut notches into good outlines.
@@ -81,20 +89,44 @@ def segment(model_name, ortho, box, points=None, point_labels=None, height=None,
             m = opened
     # keep the piece that overlaps the box (or sits under the click) most
     n, comp = cv2.connectedComponents(m.astype(np.uint8))
-    if n > 2 and not use_box:
-        px, py = int(points[0][0] - cx0), int(points[0][1] - cy0)
+    if n > 2 and click is not None:
+        px, py = int(click[0]), int(click[1])
         k = comp[min(max(py, 0), comp.shape[0] - 1), min(max(px, 0), comp.shape[1] - 1)]
         if k:
             m = comp == k
             n = 0
     if n > 2:
-        inside = comp[int(y0 - cy0):int(y1 - cy0) + 1, int(x0 - cx0):int(x1 - cx0) + 1]
+        inside = comp[max(0, int(y0)):int(y1) + 1, max(0, int(x0)):int(x1) + 1]
         counts = np.bincount(inside.ravel(), minlength=n)
         counts[0] = 0
         m = comp == int(np.argmax(counts))
     eps = max(1.0, 0.2 / res) if res else 1.0
-    poly = _polygon(m, eps)
-    return None if poly is None else poly + [cx0, cy0]
+    return _polygon(m, eps)
+
+
+def _group_prompts(boxes, side):
+    """Greedy groups of neighbouring boxes whose union stays within `side` px on both axes.
+
+    Returns lists of indices. Each group becomes one SAM call (one image-encoder
+    pass) that answers every prompt in it.
+    """
+    boxes = np.asarray(boxes, float)
+    centres = (boxes[:, :2] + boxes[:, 2:]) / 2
+    free = set(range(len(boxes)))
+    groups = []
+    for i in sorted(free, key=lambda j: (centres[j, 1], centres[j, 0])):
+        if i not in free:
+            continue
+        free.discard(i)
+        members, union = [i], boxes[i].copy()
+        for j in sorted(free, key=lambda j: np.hypot(*(centres[j] - centres[i]))):
+            u = np.r_[np.minimum(union[:2], boxes[j, :2]), np.maximum(union[2:], boxes[j, 2:])]
+            if u[2] - u[0] <= side and u[3] - u[1] <= side:
+                members.append(j)
+                union = u
+                free.discard(j)
+        groups.append(members)
+    return groups
 
 
 def bbox(polygon, pad=0.08):
@@ -143,29 +175,69 @@ def core_prompt(polygon, shave=0.15):
     return box, (float(cx + x0), float(cy + y0))
 
 
-def refine_all(model_name, ortho, seeds, height=None, res=None, min_iou=0.6):
+def _accept(s, poly, min_iou):
+    """The SAM outline for seed s, if it broadly agrees with the current one; else None."""
+    if poly is None:
+        return None
+    x0, y0, x1, y1 = (int(v) for v in bbox(s["polygon"], pad=0.5))
+    x0, y0 = max(0, x0), max(0, y0)
+    local = (lambda q: np.asarray(q) - [x0, y0])
+    shape = (max(1, y1 - y0), max(1, x1 - x0))
+    return poly if _iou(local(poly), local(s["polygon"]), shape) >= min_iou else None
+
+
+def refine_all(model_name, ortho, seeds, height=None, res=None, min_iou=0.6, group_seeds=4.0):
     """Redraw every seed with SAM, prompted by its current outline (tight box + centre click).
 
     A SAM outline replaces the old one only if they broadly agree (IoU >=
     min_iou): SAM can occasionally grab a neighbour or a fragment, and then the
     original is the safer answer. Hand-drawn outlines are left alone.
+
+    Neighbouring seeds share one SAM call: the image encoder (nearly all of the
+    cost) runs once per group of seeds whose boxes fit in a crop about
+    `group_seeds` seed widths across, and the cheap mask decoder answers every
+    prompt in the group. Seeds still get a few hundred pixels each at SAM's
+    1024 px input, so outlines match the one-seed-per-call result: on a
+    43-chickpea sample, 4 seed widths gave 2.8x the speed with a mean area
+    difference of 0.4 % (6 widths: 4.6x, but outlines ran 1.7 % large).
     Returns (new seeds, number replaced).
     """
-    out, replaced = [], 0
-    for s in seeds:
-        if s["status"] == "manual":
-            out.append(s)
+    out = list(seeds)
+    todo = [i for i, s in enumerate(seeds) if s["status"] != "manual"]
+    if not todo:
+        return out, 0
+    prompts = {i: core_prompt(seeds[i]["polygon"]) for i in todo}
+    boxes = np.array([prompts[i][0] for i in todo], float)
+    seed_px = float(np.median(np.maximum(boxes[:, 2] - boxes[:, 0], boxes[:, 3] - boxes[:, 1])))
+    side = group_seeds * seed_px
+    polys = {}
+    model = get_model(model_name)
+    h, w = ortho.shape[:2]
+    for members in _group_prompts(boxes, side):
+        idx = [todo[k] for k in members]
+        gb = np.array([prompts[i][0] for i in idx], float)
+        pad = 0.4 * seed_px  # the same context around a seed as a single prompt gets
+        cx0, cy0 = int(max(0, gb[:, 0].min() - pad)), int(max(0, gb[:, 1].min() - pad))
+        cx1, cy1 = int(min(w, gb[:, 2].max() + pad)), int(min(h, gb[:, 3].max() + pad))
+        if cx1 - cx0 < 8 or cy1 - cy0 < 8:
             continue
-        box, centre = core_prompt(s["polygon"])
-        poly = segment(model_name, ortho, box, [centre], [1], height=height, res=res)
+        crop = np.ascontiguousarray(ortho[cy0:cy1, cx0:cx1])
+        local_boxes = [[b[0] - cx0, b[1] - cy0, b[2] - cx0, b[3] - cy0] for b in gb]
+        local_pts = [[[prompts[i][1][0] - cx0, prompts[i][1][1] - cy0]] for i in idx]
+        with _lock:
+            r = model(crop, verbose=False, bboxes=local_boxes, points=local_pts, labels=[[1]] * len(idx))[0]
+        if r.masks is None or not len(r.masks.data):
+            continue
+        masks = r.masks.data.cpu().numpy() > 0.5
+        which = r.boxes.cls.cpu().numpy().astype(int)  # prompt index of each returned mask
+        for m, k in zip(masks, which):
+            poly = _mask_to_polygon(m, local_boxes[k], res)
+            if poly is not None:
+                polys[idx[k]] = poly + [cx0, cy0]
+    replaced = 0
+    for i in todo:
+        poly = _accept(seeds[i], polys.get(i), min_iou)
         if poly is not None:
-            x0, y0, x1, y1 = (int(v) for v in bbox(s["polygon"], pad=0.5))
-            x0, y0 = max(0, x0), max(0, y0)
-            local = (lambda q: np.asarray(q) - [x0, y0])
-            shape = (max(1, y1 - y0), max(1, x1 - x0))
-            if _iou(local(poly), local(s["polygon"]), shape) >= min_iou:
-                out.append({**s, "polygon": poly.tolist(), "sam": True})
-                replaced += 1
-                continue
-        out.append(s)
+            out[i] = {**seeds[i], "polygon": poly.tolist(), "sam": True}
+            replaced += 1
     return out, replaced

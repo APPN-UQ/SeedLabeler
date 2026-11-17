@@ -109,7 +109,7 @@ class LabelPage(QWidget):
         tools.addWidget(caption("opacity"))
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setValue(70)
+        self.opacity_slider.setValue(5)
         self.opacity_slider.setFixedWidth(80)
         self.opacity_slider.setToolTip("Seed overlay opacity")
         self.opacity_slider.valueChanged.connect(self._opacity_changed)
@@ -427,12 +427,18 @@ class LabelPage(QWidget):
             return
         s = self.sample
 
-        def done(_ann):
-            n = len(s.annotations()["seeds"])
-            self.say(f"{s.id}: {n} seeds")
-            self._refresh_samples(select_id=s.id)
+        def done(ann):
+            n = len(ann["seeds"])
+            self._refresh_samples(select_id=s.id)  # the first outlines appear now (a fresh Sample object)
+            still_here = self.sample is not None and self.sample.path == s.path
+            if self.project.config.settings.sam_refine and n and still_here:
+                self.say(f"{s.id}: {n} seeds · sam refining the outlines")
+                self.sam_refine_all()  # second pass; skipped if the outlines are edited meanwhile
+            else:
+                self.say(f"{s.id}: {n} seeds")
 
-        self.run_task(run_detection, self.project, s, done=done, msg=f"detecting {s.id}")
+        # SAM refine is run as a second pass so the user sees (and can start on) outlines within seconds
+        self.run_task(run_detection, self.project, s, refine=False, done=done, msg=f"detecting {s.id}")
 
     # ------------------------------------------------------------ editing
     def _set_mode(self, mode):
@@ -601,17 +607,19 @@ class LabelPage(QWidget):
             return
         st, res = self.project.config.settings, self.sample.meta()["res"]
         o, h, _ = self.layers
-        s = self.sample
+        s, before = self.sample, self.ann["seeds"]
 
         def done(result):
             seeds, n = result
-            if s is self.sample:
-                self._edited(seeds)
-                self.canvas.set_seeds(seeds)
-                self.say(f"sam redrew {n} of {len(seeds)} outlines")
+            if self.sample is None or self.sample.path != s.path or self.ann is None:
+                return
+            if self.ann["seeds"] != before:
+                return self.say("sam refine skipped: the outlines changed while it ran (use REFINE ALL to redo)")
+            self._edited(seeds)
+            self.canvas.set_seeds(seeds)
+            self.say(f"sam redrew {n} of {len(seeds)} outlines")
 
-        self.run_task(sam.refine_all, st.sam_model, o, self.ann["seeds"], h, res, done=done,
-                      msg="sam refining outlines")
+        self.run_task(sam.refine_all, st.sam_model, o, before, h, res, done=done, msg="sam refining outlines")
 
     # ------------------------------------------------------------ table
     def _load_table(self):
@@ -678,6 +686,7 @@ class LabelPage(QWidget):
             self.ann = s.annotations()
             self._refresh_list_glyphs()
             self._update_model_readout()
+            self.shell.refresh_gates()
             self.say(f"{s.id} added to the {self.project.config.crop} dataset ({split})")
 
         self.run_task(ml.add_to_dataset, self.project, s, done=done, msg="adding to dataset")
@@ -777,7 +786,8 @@ class SettingsDialog(QDialog):
             self.sam_model.addItem(v.title(), k)
         self.sam_model.setCurrentIndex(max(0, self.sam_model.findData(s.sam_model)))
         self.sam_refine = button("on", checkable=True,
-                                 tip="DETECT finds the seeds, then SAM redraws every outline precisely")
+                                 tip="DETECT finds the seeds, then SAM redraws every outline precisely.\n"
+                                     "In LABEL the first outlines show at once and SAM refines them in a second pass.")
         self.sam_refine.setChecked(s.sam_refine)
         self.sam_refine.toggled.connect(lambda on: self.sam_refine.setText("ON" if on else "OFF"))
         self.sam_refine.setText("ON" if s.sam_refine else "OFF")

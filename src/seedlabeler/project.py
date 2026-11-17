@@ -91,7 +91,8 @@ class Project:
         d = json.loads((root / "project.json").read_text())
         known = Settings.__dataclass_fields__
         d["settings"] = Settings(**{k: v for k, v in d.get("settings", {}).items() if k in known})
-        p = cls(root, ProjectConfig(**d))
+        # keys this version does not know (another tool's, or a newer version's) are ignored, not fatal
+        p = cls(root, ProjectConfig(**{k: v for k, v in d.items() if k in ProjectConfig.__dataclass_fields__}))
         if p.adopt_files():
             p.save()
         return p

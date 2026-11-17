@@ -190,25 +190,34 @@ class NewProjectDialog(QDialog):
 
 # --------------------------------------------------------------------------- hub
 STEPS = [
-    ("LABEL", "Capture and correct samples. Once there is a model, it does the first draft and you correct it."),
-    ("TRAIN", "Train the crop's model, then retrain as you add corrected samples: each round starts from the "
-              "last model and learns from the whole dataset."),
-    ("CAPTURE", "Collect the rest quickly: scan, capture, next. Unlocks once the crop has a model."),
+    ("CAPTURE", "Scan a barcode or type a sample id, capture, next. No detection here: just collect good images. "
+                "Start with a first batch so there is something to label."),
+    ("LABEL", "Detect seeds in the captured samples, correct the outlines, add each to the dataset. "
+              "Once there is a model, it does the first draft and you correct it."),
+    ("TRAIN", "Train the crop's model on the labelled samples, then retrain as you correct more: each round "
+              "starts from the last model and learns from the whole dataset."),
     ("PROCESS", "Detect every captured sample in one batch, check the flagged ones, export traits."),
 ]
 MODES = {
-    "label": ("LABEL & TRAIN", "Capture, detect with SAM, correct outlines, add to the dataset, train models. "
+    "capture": ("CAPTURE", "Barcode-driven collection with live view and instant quality checks. "
+                           "Built for throughput."),
+    "label": ("LABEL & TRAIN", "Detect with SAM, correct outlines, add to the dataset, train models. "
                                "Slower and deliberate."),
-    "capture": ("RAPID CAPTURE", "Barcode-driven collection with live view and instant quality checks. "
-                                 "Built for throughput. Needs a trained model."),
     "process": ("PROCESS & EXPORT", "Batch detection of everything captured, flags worth a look, "
                                     "traits CSVs."),
 }
 
 
 def workflow_state(project):
-    """Per-step (state, text) with state in done/next/todo, and the recommended mode."""
+    """Per-step (state, text) with state in done/next/todo, the recommended mode, and counts.
+
+    The flow is capture -> label -> train -> process. The same target (settings
+    .label_target) says how many samples to capture before labelling is worth
+    starting and how many to label before training. Both are soft: the counts
+    guide, nothing is locked.
+    """
     samples = project.samples()
+    captured = len(samples)
     waiting = sum(1 for s in samples if not s.processed)
     ds_samples, ds_seeds = ml.dataset_summary(project)
     target = project.config.settings.label_target
@@ -218,34 +227,50 @@ def workflow_state(project):
     # retrain once a meaningful share of the dataset is new
     retrain_due = model is not None and new >= max(5, 0.25 * max(ds_samples, 1))
 
-    done1 = ds_samples >= target or model is not None
-    done2 = model is not None and not retrain_due
-    if model is None:
-        train_text = "no model yet" + (f" · ready to train on {ds_samples} samples" if done1 else "")
+    has_model = model is not None
+    done_capture = captured >= target or has_model
+    done_label = ds_samples >= target or has_model
+    done_train = has_model and not retrain_due
+    if not has_model:
+        train_text = "no model yet" + (f" · ready to train on {ds_samples} samples" if done_label else "")
     else:
         score = f" · mask mAP50 {model['mask_map50']:.2f}" if model.get("mask_map50") is not None else ""
         train_text = f"{model['name']}{score} · {new} sample(s) added since" + (" · retrain" if retrain_due else "")
     texts = [
-        f"{ds_samples} / {target} samples · {ds_seeds} seeds in the dataset" if model is None
-        else f"{ds_samples} samples · {ds_seeds} seeds in the dataset",
+        f"{captured} captured" if has_model else f"{captured} / {target} samples captured",
+        (f"{ds_samples} samples · {ds_seeds} seeds in the dataset" if has_model
+         else f"{ds_samples} / {target} samples labelled · {ds_seeds} seeds"),
         train_text,
-        f"{len(samples)} captured" if model is not None else "locked until there is a model",
         f"{waiting} waiting to be processed" if waiting else "everything processed",
     ]
-    if model is None:
-        nxt = 1 if done1 else 0
+    if not has_model:
+        nxt = 0 if not done_capture else (1 if not done_label else 2)
     elif retrain_due:
-        nxt = 1
+        nxt = 2
     elif waiting:
         nxt = 3
     else:
-        nxt = 2
-    states = ["done" if (i == 0 and done1) or (i == 1 and done2) else "todo" for i in range(4)]
+        nxt = 0
+    states = ["done" if d else "todo" for d in (done_capture, done_label, done_train, False)]
     states[nxt] = "next"
-    mode = {0: "label", 1: "label", 2: "capture", 3: "process"}[nxt]
-    return list(zip(states, texts)), mode, {"samples": len(samples), "waiting": waiting, "ds_samples": ds_samples,
-                                            "ds_seeds": ds_seeds, "models": len(models), "has_model": model is not None,
-                                            "new_since_model": new}
+    mode = {0: "capture", 1: "label", 2: "label", 3: "process"}[nxt]
+
+    # the top-bar readiness pill: one line on what to do next; "ok" once the current step's door is open
+    if not has_model:
+        if not done_capture:
+            pill = (f"capture {captured} / {target}", "warn")
+        elif not done_label:
+            pill = (f"ready to label · {ds_samples} / {target} labelled", "ok")
+        else:
+            pill = (f"ready to train · {ds_samples} labelled", "ok")
+    elif retrain_due:
+        pill = (f"{model['name']} · {new} new samples · retrain", "warn")
+    else:
+        pill = (f"{model['name']} · {waiting} to process" if waiting else f"{model['name']} · ready", "ok")
+    return list(zip(states, texts)), mode, {
+        "samples": captured, "waiting": waiting, "ds_samples": ds_samples, "ds_seeds": ds_seeds,
+        "models": len(models), "has_model": has_model, "new_since_model": new, "target": target,
+        "label_open": done_capture, "process_open": has_model, "pill": pill}
 
 
 class StepWidget(QFrame):
@@ -377,9 +402,8 @@ class HubPage(QWidget):
             w.set_state(state, text)
         for k, lab in self.stat_labels.items():
             lab.setText(str(stats[k]))
-        self.b_train.setVisible(steps[1][0] == "next")
+        self.b_train.setVisible(steps[2][0] == "next")
         self.b_train.setText("RETRAIN NOW" if stats["has_model"] else "TRAIN NOW")
-        self.tiles["capture"].setEnabled(True)
         for k, b in self.tiles.items():
             b.setProperty("recommended", "true" if k == mode else "false")
             b.style().unpolish(b)

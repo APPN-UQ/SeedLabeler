@@ -50,22 +50,22 @@ The app checks GitHub Releases on startup. When a new version is available a dia
 
 | Step | Mode | What happens |
 |------|------|-------------|
-| 1 | **LABEL** | Capture ~20 samples, detect seeds, correct outlines, add to dataset |
-| 2 | **TRAIN** | Train the crop's model on them (hub or LABEL toolbar) |
-| 3 | **CAPTURE** | Collect the rest quickly with live view and barcode scanning |
+| 1 | **CAPTURE** | Scan a barcode, capture, next. Start with ~20 samples |
+| 2 | **LABEL** | Detect seeds in the captured samples, correct outlines, add ~20 to the dataset |
+| 3 | **TRAIN** | Train the crop's model on them (hub or LABEL toolbar) |
 | 4 | **PROCESS** | Batch-detect everything, review flagged samples, export CSV |
 
-You can enter CAPTURE mode at any time to collect imagery. A trained model is only needed for PROCESS (batch detection). After training, the model becomes the detector so future LABEL samples start from its predictions. Add another batch, retrain, repeat.
+The readiness pill in the top bar says where you are (`capture 12 / 20`, `ready to label`, `ready to train`, `<model> · 40 to process`). LABEL is dimmed until the capture target is reached and PROCESS until there is a model, but neither is locked: the counts guide, you decide. The target (20 by default) is **Settings > LABEL TARGET**. After training, the model becomes the detector so future LABEL samples start from its predictions. Capture another batch, correct a few, retrain, repeat.
 
 ### Screens
 
 **Home**: recent projects, NEW PROJECT (name, location, crop, calibration, camera settings) and OPEN PROJECT.
 
-**Hub**: counts (captured, to process, labelled samples and seeds, models), the suggested workflow with the next step highlighted, and the four modes.
+**Hub**: counts (captured, to process, labelled samples and seeds, models), the suggested workflow with the next step highlighted, and the three modes.
 
-**LABEL**: capture or import, detect + SAM, correct outlines, tag seeds, add to dataset, train. Switch between RGB and depth map views. Opacity slider controls seed overlay transparency.
+**CAPTURE**: live view with stage markers; scan barcode or type a sample ID, capture, next. Instant quality checks (images saved, sharpness, exposure, depth coverage). No detection: PROCESS does that later.
 
-**CAPTURE**: live view with stage markers; scan barcode or type a sample ID, capture, next. Instant quality checks (images saved, sharpness, exposure, depth coverage).
+**LABEL**: pick a captured sample (or capture / import one here), detect + SAM, correct outlines, tag seeds, add to dataset, train. Switch between RGB and depth map views. Opacity slider controls seed overlay transparency.
 
 **PROCESS**: table of samples with status flags (LOW DEPTH, COUNT?, NO SEEDS, L/R FIXED). PROCESS NEW / PROCESS SELECTED in background. Double-click to open in LABEL. EXPORT CSV.
 
@@ -110,11 +110,15 @@ In every capture the markers:
 
 ### Colour calibration
 
-On first entry to LABEL or CAPTURE each session, a calibration dialog prompts you to photograph a ColorChecker chart. The resulting colour correction matrix is saved per project and **snapshotted into each sample** at detect time, so if you recalibrate after changing lighting conditions, old samples keep their original calibration and new samples use the new one.
+On first entry to LABEL or CAPTURE each session, a calibration dialog prompts you to photograph a ColorChecker chart. After CALIBRATE the captured image is shown with the detected chart outlined in green and a disc of the measured colour on each of the 24 patches, so a real detection is obvious (the discs blend into the patches). A capture without a chart, or with a poor fit, is rejected in red with the reason, nothing is saved, and TRY AGAIN returns to the live view. The resulting colour correction matrix is saved per project and **snapshotted into each sample** at detect time, so if you recalibrate after changing lighting conditions, old samples keep their original calibration and new samples use the new one.
+
+### Archiving to the RDM
+
+Copying a project into the APPN folder structure on the research data store (`<project>/<site>/<sensor>/<date>/<run>/T0_raw|T1_proc|T2_trait`, with an RO-Crate) is done by the separate **FileStructureMapper** tool (`code/FileStructureMapper`), which reads a SeedLabeler project folder directly. The local project layout above stays as it is.
 
 ### SAM
 
-SAM (Segment Anything) runs on a full-resolution crop around each prompt; it separates seeds from their shadows. Pick the model in Settings: MobileSAM (~30 ms/seed) or SAM 2.1 base (~100 ms, sharper). Weights download once to `~/.seedlabeler/weights`. **SAM AFTER DETECT** runs REFINE ALL automatically after every detection.
+SAM (Segment Anything) runs on a full-resolution crop around each prompt; it separates seeds from their shadows. Pick the model in Settings: MobileSAM (fast) or SAM 2.1 base (sharper). Weights download once to `~/.seedlabeler/weights`. **SAM REFINE** runs REFINE ALL automatically after every detection. In LABEL the classic or model outlines appear first and SAM refines them in a second pass a few seconds later, so you can start checking straight away; if you edit an outline before the pass finishes it is skipped (press REFINE ALL to redo it). REFINE ALL shares one SAM pass between neighbouring seeds (about four seed widths per crop), which is 3-5x faster on a CPU than one pass per seed with the same outlines to within 0.4 % in area.
 
 ### Models
 

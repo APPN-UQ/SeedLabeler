@@ -214,6 +214,7 @@ class ProcessPage(QWidget):
         self.shell.set_busy("batch", False)
         self.shell.say(f"processed {n} samples in {seconds / 60:.1f} min")
         self.refresh()
+        self.shell.refresh_gates()
 
     def stop(self):
         if self.worker is not None:

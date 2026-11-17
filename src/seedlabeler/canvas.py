@@ -215,7 +215,7 @@ class Canvas(QGraphicsView):
         self.guide_item = None
         self.items_ = []
         self.seed_labels = list(SEED_LABELS)
-        self._seed_opacity = 0.7
+        self._seed_opacity = 0.05  # a faint fill: the outline carries the shape, the seed stays visible
         self.mode = "select"
         self._panning = None
         self._space = False

@@ -129,11 +129,18 @@ def test_sam_box_click_and_refine(app, tmp_path):
     assert any(s.get("sam") for s in w.ann["seeds"])
     w.do_undo()
     assert not any(s.get("sam") for s in w.ann["seeds"])
+
+    # DETECT in LABEL: the first outlines land at once, then SAM refines them as a second task
+    shell.project.config.settings.sam_refine = True
+    w.detect()
+    _wait(app, lambda: not shell.tasks, timeout=600)  # the refine task is queued inside detection's done()
+    assert len(w.ann["seeds"]) == n0 and any(s.get("sam") for s in w.ann["seeds"])
+    assert w.undo  # the SAM pass is one undoable edit on top of the detected outlines
     shell.close()
 
 
 def test_hub_workflow_and_batch_process(app, tmp_path):
-    """Hub recommends LABEL first; PROCESS batch-detects captured samples."""
+    """Hub recommends CAPTURE first, then LABEL, then TRAIN; PROCESS batch-detects captured samples."""
     from seedlabeler.home import workflow_state
     from seedlabeler.shell import Shell
 
@@ -144,26 +151,39 @@ def test_hub_workflow_and_batch_process(app, tmp_path):
     for i in range(2):
         p.add_pair(left, right, f"cap{i}")  # captured, not processed (rapid-capture style)
     steps, mode, stats = workflow_state(p)
-    assert mode == "label" and steps[0][0] == "next" and stats["waiting"] == 2
+    assert mode == "capture" and steps[0][0] == "next" and stats["waiting"] == 2
+    assert stats["pill"] == ("capture 2 / 20", "warn") and not stats["label_open"]
 
     shell = Shell()
     shell.open_project(p.root)
+    assert shell.ready_label.text() == "capture 2 / 20"
+    assert shell.tabs["label"].property("dim") == "true" and shell.tabs["label"].isEnabled()  # soft gate
+    shell.go("label")
+    assert shell.current == "label"
     shell.go("process")
     shell.process.process_new()
     _wait(app, lambda: shell.process.worker is None, timeout=300)
     assert all(s.processed for s in p.samples())
     assert len(p.samples()[0].annotations()["seeds"]) == 19
-    p.config.settings.label_target = 1
+    p.config.settings.label_target = 2
     p.save()
+    shell.project.config.settings.label_target = 2  # the shell holds its own Project object
+    steps, mode, stats = workflow_state(p)
+    assert mode == "label" and steps[0][0] == "done" and steps[1][0] == "next"  # captured enough: label next
+    assert stats["pill"] == ("ready to label · 0 / 2 labelled", "ok")
+    shell.go("hub")
+    assert shell.tabs["label"].property("dim") == "false"
     from seedlabeler import ml
     ml.add_to_dataset(p, p.samples()[0])
-    steps, mode, _ = workflow_state(p)
-    assert steps[0][0] == "done" and steps[1][0] == "next"  # labelled enough: train next
+    ml.add_to_dataset(p, p.samples()[1])
+    steps, mode, stats = workflow_state(p)
+    assert steps[1][0] == "done" and steps[2][0] == "next" and mode == "label"  # labelled enough: train next
+    assert stats["pill"][0].startswith("ready to train")
     shell.close()
 
 
-def test_capture_locked_until_model_and_retrain_counter(app, tmp_path):
-    """CAPTURE stays locked without a model; LOAD MODEL unlocks it and makes it the detector."""
+def test_process_gate_opens_with_model_and_retrain_counter(app, tmp_path):
+    """PROCESS is dimmed (not locked) without a model; LOAD MODEL opens it and makes the model the detector."""
     from seedlabeler import ml
     from seedlabeler.home import workflow_state
     from seedlabeler.shell import Shell
@@ -178,16 +198,16 @@ def test_capture_locked_until_model_and_retrain_counter(app, tmp_path):
     ml.add_to_dataset(p, s)
     shell = Shell()
     shell.open_project(p.root)
+    assert shell.tabs["process"].property("dim") == "true" and shell.tabs["process"].isEnabled()
     shell.go("capture")
-    assert shell.current != "capture" and not shell.tabs["capture"].isEnabled()
+    assert shell.current == "capture"  # capture is never gated
 
     weights, assumed = ml.import_model(p, demo_model)
     assert not assumed  # the run's settings (input, tiling) came along
     shell.use_model(weights)
     shell.models_changed()
-    assert shell.tabs["capture"].isEnabled()
-    shell.go("capture")
-    assert shell.current == "capture"
+    assert shell.tabs["process"].property("dim") == "false"
+    assert shell.ready_label.text().endswith("· ready")  # "<imported model name> · ready"
     shell.go("hub")
     assert shell.project.config.detector.endswith("weights/best.pt")  # the app's project, saved to disk
     assert Project.open(p.root).config.detector == shell.project.config.detector
