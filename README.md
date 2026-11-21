@@ -16,16 +16,15 @@ Desktop app for stereo seed phenotyping. Supports Sony RX0 stereo pairs and Luxo
 
 SeedLabeler turns a pair of cameras and a printed stage sheet into a seed measurement station. The deliverable is **traits tables** (per seed and per sample: size, shape, colour, thickness, volume, uniformity). Along the way, every corrected sample becomes training data, so the app trains an instance-segmentation model for each crop and uses it as the detector for future samples.
 
-Builds on [`chickpea-seed`](https://github.com/APPN-UQ/ChickpeaSeed) (stage, top-down view, segmentation, traits), [`sonyrx0`](https://github.com/APPN-UQ/SonyRX0) (cameras, calibration, depth) and [`colourcal`](https://github.com/APPN-UQ/ColourCal) (colour correction from ColorChecker charts).
+Includes the vendored `chickpea` package (`src/chickpea`: stage, top-down view, segmentation, traits), and builds on [`sonyrx0`](https://github.com/APPN-UQ/SonyRX0) (cameras, calibration, depth) and [`colourcal`](https://github.com/APPN-UQ/ColourCal) (colour correction from ColorChecker charts).
 
 ## Installation and Setup
 
 ### One-step install (any Windows PC)
 
-1. Get the four repos side by side in one folder:
+1. Get the three repos side by side in one folder (chickpea is vendored inside SeedLabeler):
    ```
    git clone https://github.com/APPN-UQ/SonyRX0
-   git clone https://github.com/APPN-UQ/ChickpeaSeed
    git clone https://github.com/APPN-UQ/ColourCal
    git clone https://github.com/APPN-UQ/SeedLabeler
    ```
