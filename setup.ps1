@@ -3,10 +3,11 @@ SeedLabeler one-step setup for a Windows PC.
 
     Double-click setup.bat, or:  powershell -ExecutionPolicy Bypass -File setup.ps1 [-Cpu] [-EnvName name] [-NoShortcut]
 
-Expects SonyRX0, ChickpeaSeed, ColourCal and SeedLabeler side by side in one
-folder (as in OneDrive or after cloning the four GitHub repos). Creates or updates a conda
+Expects SonyRX0, ColourCal and SeedLabeler side by side in one
+folder (as in OneDrive or after cloning the three GitHub repos). The chickpea
+package is vendored inside SeedLabeler now, so it needs no separate repo. Creates or updates a conda
 environment, installs PyTorch for this PC's GPU (CUDA 12.8 / 12.6, or CPU),
-installs the three packages with the tested versions, runs a self-test and puts
+installs the packages with the tested versions, runs a self-test and puts
 a SeedLabeler shortcut on the desktop. Safe to run again (e.g. after git pull).
 #>
 param(
@@ -22,10 +23,10 @@ function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 function Fail($msg) { Write-Host "`n$msg" -ForegroundColor Red; exit 1 }
 
 # ---------------------------------------------------------------- repos
-Step "Checking the four repos"
-foreach ($r in @("SonyRX0", "ChickpeaSeed", "ColourCal", "SeedLabeler")) {
+Step "Checking the three repos"
+foreach ($r in @("SonyRX0", "ColourCal", "SeedLabeler")) {
     if (-not (Test-Path (Join-Path $code "$r\pyproject.toml"))) {
-        Fail "Missing $code\$r. Put SonyRX0, ChickpeaSeed, ColourCal and SeedLabeler side by side in one folder."
+        Fail "Missing $code\$r. Put SonyRX0, ColourCal and SeedLabeler side by side in one folder."
     }
     Write-Host "  found $r"
 }
@@ -103,8 +104,8 @@ Pip install --upgrade pip
 Pip install torch torchvision --index-url $index
 
 # ---------------------------------------------------------------- packages
-Step "SonyRX0, ChickpeaSeed, ColourCal, SeedLabeler"
-Pip install -c (Join-Path $here "constraints.txt") -e (Join-Path $code "SonyRX0") -e (Join-Path $code "ChickpeaSeed") -e (Join-Path $code "ColourCal") -e "$here[train,dev,oak]"
+Step "SonyRX0, ColourCal, SeedLabeler (chickpea vendored inside SeedLabeler)"
+Pip install -c (Join-Path $here "constraints.txt") -e (Join-Path $code "SonyRX0") -e (Join-Path $code "ColourCal") -e "$here[train,dev,oak]"
 # Ultralytics pulls in opencv-python, which shadows opencv-contrib (needed for ArUco boards)
 & $py -m pip uninstall -y opencv-python opencv-python-headless | Out-Null
 Pip install --force-reinstall --no-deps "opencv-contrib-python==4.10.0.84"
