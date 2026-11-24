@@ -7,7 +7,7 @@ Output:      dist/SeedLabeler/SeedLabeler.exe
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 block_cipher = None
 
@@ -16,6 +16,8 @@ datas = []
 datas += collect_data_files("ultralytics")
 datas += collect_data_files("depthai")
 datas += collect_data_files("colourcal")
+# Package metadata: seedlabeler.__version__ reads it (the updater compares it to the latest release)
+datas += copy_metadata("seedlabeler")
 
 # Board layouts shipped with the app
 datas += [("boards", "boards")]
