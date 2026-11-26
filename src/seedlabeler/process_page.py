@@ -137,13 +137,13 @@ class ProcessPage(QWidget):
             return
         self._refresh_detectors()
         samples = self.project.samples()
-        counts = [len(s.annotations()["seeds"]) for s in samples if s.processed]
+        counts = [len(s.annotations()["seeds"]) for s in samples if not s.needs_detection]
         med = statistics.median(counts) if counts else None
         self.table.setRowCount(len(samples))
         for r, s in enumerate(samples):
             st = s.status()
             meta = s.meta()
-            n = len(s.annotations()["seeds"]) if s.processed else None
+            n = len(s.annotations()["seeds"]) if not s.needs_detection else None
             fl = flags(s, med)
             cells = [s.id, STATUS_TEXT.get(st, st), "" if n is None else str(n),
                      f"{100 * meta['depth_coverage']:.0f}%" if "depth_coverage" in meta else "",
@@ -153,8 +153,8 @@ class ProcessPage(QWidget):
                 if c == 0:
                     it.setData(Qt.UserRole, s.id)
                 self.table.setItem(r, c, it)
-        waiting = sum(1 for s in samples if not s.processed)
-        flagged = sum(1 for s in samples if s.processed and flags(s, med))
+        waiting = sum(1 for s in samples if s.needs_detection)
+        flagged = sum(1 for s in samples if not s.needs_detection and flags(s, med))
         self.summary.setText(f"{len(samples)} samples · {waiting} to process · {flagged} flagged · "
                              "double-click a sample to check or correct it in LABEL")
         self._update_enabled()
@@ -170,7 +170,7 @@ class ProcessPage(QWidget):
 
     # --- batch ------------------------------------------------------------------
     def process_new(self):
-        todo = [s for s in self.project.samples() if not s.processed]
+        todo = [s for s in self.project.samples() if s.needs_detection]
         if not todo:
             return self.shell.say("nothing to process")
         self._run(todo)

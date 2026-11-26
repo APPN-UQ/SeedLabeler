@@ -24,7 +24,7 @@ def run_detection(project, sample, refine=None):
 def flags(sample, median_count=None):
     """Things worth a second look after detection (short labels)."""
     out = []
-    if not sample.processed:
+    if sample.needs_detection:
         return out
     m = sample.meta()
     n = len(sample.annotations()["seeds"])

@@ -41,6 +41,8 @@ class LabelPage(QWidget):
         self.sam_active = None     # the outline SAM is currently drawing: box, clicks, index
         self._sam_busy = False
         self._remeasure_pending = False
+        self._preparing = set()    # sample paths whose top-down view is being built (no detection)
+        self._detect_after = set()  # ... and that DETECT was pressed for meanwhile
         self._remeasure_timer = QTimer(self, singleShot=True, interval=250, timeout=self._remeasure)
         self._build()
         self._update_enabled()
@@ -270,9 +272,51 @@ class LabelPage(QWidget):
             QTimer.singleShot(0, self.canvas.fit)
             self._load_table()
         elif self.sample:
-            self.readout.setText("Not detected yet: press DETECT.")
+            self._preview_and_prepare(self.sample)
         self._update_enabled()
         self._update_model_readout()
+
+    def _preview_and_prepare(self, s):
+        """New sample: show the photo at once, and build the top-down view in the background so
+        the box and click tools work without waiting for a full DETECT."""
+        img = s.rgb if s.is_rgbd else s.left
+        try:
+            self.canvas.set_image(processing.read_image(img))
+            QTimer.singleShot(0, self.canvas.fit)
+        except Exception:  # noqa: BLE001 - a preview only
+            pass
+        if s.path in self._preparing:
+            self.readout.setText("Building the top-down view … the box tool is ready in a few seconds.")
+            return
+        self.readout.setText("Camera photo (preview). Building the top-down view … "
+                             "then label by hand with BOX, or press DETECT to find the seeds.")
+        self._preparing.add(s.path)
+
+        def run():
+            try:
+                processing.prepare(self.project, s)
+                return None
+            except Exception as e:  # noqa: BLE001 - shown in the readout, not a dialog per sample
+                return f"{type(e).__name__}: {e}"
+
+        def done(err):
+            self._preparing.discard(s.path)
+            here = self.sample is not None and self.sample.path == s.path
+            if s.path in self._detect_after:
+                self._detect_after.discard(s.path)
+                if here:
+                    return self.detect()
+            if err:
+                if here:
+                    self.readout.setText(f"Could not build the top-down view: {err}")
+                return
+            if here:
+                self._refresh_samples(select_id=s.id)  # shows the view, with no seeds yet
+                self.say(f"{s.id}: ready to label by hand, or press DETECT")
+            else:
+                self._refresh_list_glyphs()
+
+        self.run_task(run, done=done)
 
     def import_pair(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Choose the LEFT and RIGHT images (left first)", "",
@@ -426,6 +470,9 @@ class LabelPage(QWidget):
         if not self.sample:
             return
         s = self.sample
+        if s.path in self._preparing:  # both write the same files: detect once the view is built
+            self._detect_after.add(s.path)
+            return self.say(f"{s.id}: detecting once the top-down view is built")
 
         def done(ann):
             n = len(ann["seeds"])

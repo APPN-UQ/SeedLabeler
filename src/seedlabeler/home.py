@@ -44,6 +44,8 @@ class HomePage(QWidget):
         row = QHBoxLayout()
         row.addWidget(button("new project", self.new_project, primary=True))
         row.addWidget(button("open project", self.open_dialog, secondary=True))
+        row.addWidget(button("import project", self.import_dialog, secondary=True,
+                             tip="Unpack a project exported from another PC (EXPORT PROJECT on its hub)"))
         row.addStretch(1)
         col.addLayout(row)
         col.addSpacing(28)
@@ -81,6 +83,25 @@ class HomePage(QWidget):
         d = QFileDialog.getExistingDirectory(self, "Open project folder")
         if d:
             self.openProject.emit(d)
+
+    def import_dialog(self):
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from .transfer import import_project
+        z, _ = QFileDialog.getOpenFileName(self, "Import a project export", "", "SeedLabeler export (*.zip)")
+        if not z:
+            return
+        dest = QFileDialog.getExistingDirectory(self, "Unpack it into which folder? (the project gets its own "
+                                                "folder inside)", str(Path.home() / "Documents" / "SeedLabeler"))
+        if not dest:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            target = import_project(z, dest)
+        except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            return QMessageBox.warning(self, "SeedLabeler", f"Import failed: {e}")
+        QApplication.restoreOverrideCursor()
+        self.openProject.emit(str(target))
 
     def new_project(self):
         dlg = NewProjectDialog(self)
@@ -218,7 +239,7 @@ def workflow_state(project):
     """
     samples = project.samples()
     captured = len(samples)
-    waiting = sum(1 for s in samples if not s.processed)
+    waiting = sum(1 for s in samples if s.needs_detection)
     ds_samples, ds_seeds = ml.dataset_summary(project)
     target = project.config.settings.label_target
     models = ml.list_models(project)
@@ -318,6 +339,8 @@ class HubPage(QWidget):
     editSettings = Signal()
     train = Signal()
     loadModel = Signal()
+    importSamples = Signal()
+    exportProject = Signal()
 
     def __init__(self):
         super().__init__()
@@ -333,6 +356,10 @@ class HubPage(QWidget):
         col.addWidget(self.title)
         col.addWidget(self.sub)
         head.addLayout(col, 1)
+        head.addWidget(button("import samples", self.importSamples.emit, secondary=True,
+                              tip="Add captured samples from a folder (e.g. copied from the capture laptop)"))
+        head.addWidget(button("export project", self.exportProject.emit, secondary=True,
+                              tip="Save the whole project as one zip, to carry to another PC (IMPORT PROJECT there)"))
         head.addWidget(button("load model", self.loadModel.emit, secondary=True,
                               tip="Use a model trained elsewhere (e.g. another project with the same crop)"))
         head.addWidget(button("settings", self.editSettings.emit, secondary=True))

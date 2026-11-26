@@ -190,6 +190,6 @@ class CapturePage(QWidget):
         if not self.project:
             return
         samples = self.project.samples()
-        waiting = sum(1 for s in samples if not s.processed)
+        waiting = sum(1 for s in samples if s.needs_detection)
         self.stats.setText(f"THIS SESSION   {self.session}\nIN PROJECT     {len(samples)}\n"
                            f"TO PROCESS     {waiting}")

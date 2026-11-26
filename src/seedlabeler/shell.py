@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox,
                                QStackedWidget, QVBoxLayout, QWidget)
 
 from . import __version__, ml, style
@@ -12,7 +12,7 @@ from .calibration import CalibrationDialog
 from .camera import CameraService
 from .oak import OakService
 from .capture_page import CapturePage
-from .home import HomePage, HubPage, remember_project, workflow_state
+from .home import HomePage, HubPage, recent_projects, remember_project, workflow_state
 from .label_page import LabelPage, SettingsDialog, TrainDialog
 from .process_page import ProcessPage
 from .project import Project, Sample
@@ -98,6 +98,8 @@ class Shell(QMainWindow):
         self.hub.editSettings.connect(self.edit_settings)
         self.hub.train.connect(self.train)
         self.hub.loadModel.connect(self.load_model)
+        self.hub.importSamples.connect(self.import_samples)
+        self.hub.exportProject.connect(self.export_project)
         self.process.openInLabel.connect(self.open_in_label)
         self.current = None
         self.use_camera("rx0")
@@ -212,9 +214,36 @@ class Shell(QMainWindow):
         self.project.config.detector = Path(weights).relative_to(self.project.root).as_posix()
         self.project.save()
 
+    def _models_elsewhere(self):
+        """Trained models for this crop in the other recent projects: [(text, best.pt)]."""
+        out = []
+        for p in recent_projects():
+            try:
+                other = Project.open(p)
+            except Exception:  # noqa: BLE001
+                continue
+            if other.root == self.project.root or other.config.crop != self.project.config.crop:
+                continue
+            for m in ml.list_models(other):
+                score = f" · mAP50 {m['mask_map50']:.2f}" if m.get("mask_map50") is not None else ""
+                out.append((f"{other.config.name}  ·  {m['name']}{score}", m["path"]))
+        return out
+
     def load_model(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Load a trained model (best.pt from a SeedLabeler run folder)",
-                                           str(self.project.root), "Model (*.pt)")
+        browse = "Browse for a model file (best.pt) …"
+        found = self._models_elsewhere()
+        f = None
+        if found:
+            items = [t for t, _ in found] + [browse]
+            pick, ok = QInputDialog.getItem(self, "Load model",
+                                            f"Models for {self.project.config.crop} in your other projects:",
+                                            items, 0, False)
+            if not ok:
+                return
+            f = dict(found).get(pick)
+        if f is None:
+            f, _ = QFileDialog.getOpenFileName(self, "Load a trained model (best.pt from a SeedLabeler run folder)",
+                                               str(self.project.root), "Model (*.pt)")
         if not f:
             return
         weights, assumed = ml.import_model(self.project, f)
@@ -222,6 +251,55 @@ class Shell(QMainWindow):
         self.models_changed()
         self.say(f"loaded model {weights.parent.parent.name} and made it the detector"
                  + (" (no settings found with it: assumed colour input and this project's tiling)" if assumed else ""))
+
+    def import_samples(self):
+        from .transfer import import_samples
+        d = QFileDialog.getExistingDirectory(self, "Import samples from a folder (searched for raw/left.jpg + "
+                                                   "right.jpg in every subfolder)")
+        if not d:
+            return
+
+        def done(r):
+            for k in ("hub", "label", "capture", "process"):
+                self.pages[k].set_project(self.project)
+            msg = f"imported {len(r['imported'])} samples"
+            notes = []
+            if r["with_colourcal"]:
+                notes.append(f"{r['with_colourcal']} keep the colour calibration they were captured with")
+            if r["renamed"]:
+                notes.append(f"{len(r['renamed'])} renamed (id already used): " + ", ".join(r["renamed"][:5])
+                             + (" …" if len(r["renamed"]) > 5 else ""))
+            if r["stereo_calib_differs"]:
+                notes.append("WARNING: they were captured with a different stereo calibration (calib.npz) "
+                             "than this project's. Sizes are measured with this project's, so check they "
+                             "are the same rig before trusting the traits")
+            self.say(msg)
+            body = msg + (":\n\n" + "\n\n".join(notes) if notes else "")
+            QMessageBox.information(self, "Import samples", body + "\n\nDetect them in PROCESS (all at once) "
+                                    "or LABEL (one by one).")
+            self.go(self.current)
+
+        self.run_task(import_samples, self.project, d, done=done, msg="importing samples …")
+
+    def export_project(self):
+        c = self.project.config
+        default = str(Path.home() / "Documents" / f"{self.project.root.name}.zip")
+        f, _ = QFileDialog.getSaveFileName(self, "Export project as a zip", default, "Zip (*.zip)")
+        if not f:
+            return
+        models = ml.list_models(self.project)
+        with_models = True
+        if models:
+            with_models = QMessageBox.question(
+                self, "Export project", f"Include the {len(models)} trained model(s)?") == QMessageBox.Yes
+        from .transfer import export_project
+
+        def done(r):
+            n, size = r
+            self.say(f"exported {c.name}: {n} files, {size / 1e6:.0f} MB -> {f}")
+
+        self.run_task(export_project, self.project, f, models=with_models, done=done,
+                      msg=f"exporting {c.name} … (large projects take a minute)")
 
     # ------------------------------------------------------------ shared services
     def say(self, msg):

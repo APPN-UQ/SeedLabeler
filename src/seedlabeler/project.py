@@ -279,8 +279,16 @@ class Sample:
     def save_annotations(self, ann):
         self.ann_file.write_text(json.dumps(ann))
 
-    def status(self):
+    @property
+    def needs_detection(self):
+        """Not detected yet: no top-down view, or only the view (prepared for hand labelling) and no seeds."""
         if not self.processed:
+            return True
+        a = self.annotations()
+        return a.get("source") == "prepared" and not a["seeds"]
+
+    def status(self):
+        if self.needs_detection:
             return "new"
         a = self.annotations()
         if a.get("in_dataset"):

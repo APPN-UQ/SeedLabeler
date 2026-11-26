@@ -125,9 +125,13 @@ def detect(project, sample, model_detector=None):
             "depth_coverage": round(depth_cov, 3), "camera": "oak" if sample.is_rgbd else "rx0",
             "levelled": st.level_height, **ex["ground"], **ex["segmentation"]}
     sample.meta_file.write_text(json.dumps(meta, indent=2))
-    project_cal = project.root / "calibration" / "colourcal.json"
-    if project_cal.exists():
-        shutil.copy2(project_cal, sample.path / "colourcal.json")
+    # colour calibration snapshot: the one it was captured with (raw/colourcal.json, from an
+    # import) if there is one, else the project's current one
+    cal = sample.path / "raw" / "colourcal.json"
+    if not cal.exists():
+        cal = project.root / "calibration" / "colourcal.json"
+    if cal.exists():
+        shutil.copy2(cal, sample.path / "colourcal.json")
 
     source = "classic" if model_detector is None else f"model:{cfg.detector}"
     polys = labels_to_polygons(ex["labels"], epsilon=max(1.0, 0.2 / grid.res))  # ~0.2 mm: few handles, exact enough
@@ -137,6 +141,20 @@ def detect(project, sample, model_detector=None):
            "reviewed": False, "in_dataset": old.get("in_dataset", False)}
     sample.save_annotations(ann)
     remeasure(project, sample, ann)
+    return ann
+
+
+def _no_seeds(ortho, valid, res, height):
+    return np.zeros(ortho.shape[:2], np.int32), {}
+
+
+def prepare(project, sample):
+    """Build the top-down image and height map only (no seed detection), so a sample can be
+    labelled by hand straight away. The sample still counts as new: PROCESS and DETECT
+    treat it as not yet detected until it has seeds."""
+    ann = detect(project, sample, _no_seeds)
+    ann["source"] = "prepared"
+    sample.save_annotations(ann)
     return ann
 
 
