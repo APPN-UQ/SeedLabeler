@@ -22,18 +22,27 @@ Includes the vendored `chickpea` package (`src/chickpea`: stage, top-down view, 
 
 ### One-step install (any Windows PC)
 
-1. Get the three repos side by side in one folder (chickpea is vendored inside SeedLabeler):
-   ```
-   git clone https://github.com/APPN-UQ/SonyRX0
-   git clone https://github.com/APPN-UQ/ColourCal
-   git clone https://github.com/APPN-UQ/SeedLabeler
-   ```
-2. Double-click **`SeedLabeler/setup.bat`**. It finds conda (offers to install
-   Miniconda if missing), creates the `seedlabeler` environment, installs PyTorch
-   for this PC's GPU (CUDA 12.8, 12.6 for older drivers, or CPU), installs the
-   three packages with the tested versions (`constraints.txt`), runs a self-test
-   and puts a **SeedLabeler** shortcut on the desktop. Run it again after a
-   `git pull`; options: `-Cpu`, `-EnvName name`, `-NoShortcut`.
+Needs [Git](https://git-scm.com/download/win) and Miniconda/Anaconda (setup offers
+to install Miniconda if it's missing). In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/APPN-UQ/SeedLabeler/main/install.ps1 | iex
+```
+
+1. That clones SonyRX0, ColourCal and SeedLabeler side by side into
+   `%USERPROFILE%\code\seedlabeler` (set `$env:SEEDLABELER_ROOT` first to choose
+   another folder), then runs `setup.ps1`.
+2. `setup.ps1` creates the `seedlabeler` conda environment, installs PyTorch for
+   this PC's GPU (CUDA 12.8, 12.6 for older drivers, or CPU), installs the three
+   packages with the tested versions (`constraints.txt`), runs a self-test and puts
+   a **SeedLabeler** shortcut on the desktop.
+
+**To update or repair later**, double-click **`SeedLabeler/install.bat`**. It brings
+all three repos level with GitHub (local edits are stashed, local commits kept on a
+`backup-<date>` branch, a copied non-git folder is set aside as `<name>.old-<date>`),
+clears `__pycache__`/`*.egg-info` and reinstalls. Options: `-Cpu`, `-EnvName name`,
+`-NoShortcut`, `-NoSetup`. Projects and data are never touched.
+
 3. Plug in the cameras (PC Remote mode, data cables): no drivers or Sony software
    needed. An OAK-D goes in a USB 3 (blue) port; no drivers either.
 
