@@ -95,13 +95,14 @@ class LabelPage(QWidget):
                             tip="SAM: drag a box around a seed, or click a seed.\n"
                                 "Then click to include more, Shift/right-click to exclude.")
         self.b_select.setChecked(True)
-        self.b_samfix = button("sam fix", self.sam_resegment, tip="Redraw the selected seed with SAM (R)")
+        self.b_samfix = button("sam fix (r)", self.sam_resegment, tip="Redraw the selected seed with SAM (R)")
         self.b_delete = button("delete", lambda: self.canvas.delete_selected())
         self.b_undo = button("undo", self.do_undo, tip="Undo (Ctrl+Z)")
         self.b_redo = button("redo", self.do_redo, tip="Redo (Ctrl+Y or Ctrl+Shift+Z)")
         # Single letters don't fire while typing in the sample-ID box (text fields keep their keys)
         for keys, fn, btn in (("S", lambda: self._set_mode("select"), self.b_select),
                               ("B", lambda: self._set_mode("box"), self.b_box),
+                              ("R", self.sam_resegment, self.b_samfix),
                               ("Ctrl+Z", self.do_undo, self.b_undo),
                               ("Ctrl+Y", self.do_redo, self.b_redo),
                               ("Ctrl+Shift+Z", self.do_redo, self.b_redo)):
