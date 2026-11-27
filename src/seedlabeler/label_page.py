@@ -507,10 +507,28 @@ class LabelPage(QWidget):
             seeds[index].pop("label", None)
         self._edited(seeds)
 
-    def _edited(self, seeds):
+    def _edited(self, seeds, select=None):
+        """Every outline change comes through here. Outlines are kept disjoint: the seed being
+        edited (select, else the one selected on the canvas) keeps its outline and neighbours give
+        way. Redraws when select is given or anything moved; returns select's index afterwards."""
+        protect = select
+        if protect is None:
+            sel = [i for i, it in enumerate(self.canvas.items_) if it.isSelected()]
+            protect = sel[0] if len(sel) == 1 else None
+        fixed, kept = seeds, list(range(len(seeds)))
+        if self.layers is not None:
+            res = self.sample.meta().get("res")
+            fixed, kept = processing.resolve_overlaps(seeds, self.layers[0].shape[:2],
+                                                      epsilon=max(1.0, 0.2 / res) if res else 1.0, protect=protect)
+        new_sel = kept.index(protect) if protect in kept else None
         self.undo.append(self.ann["seeds"])
         self.redo.clear()
-        self._apply_seeds(seeds)
+        self._apply_seeds(fixed)
+        if select is not None or fixed != seeds:
+            self.canvas.set_seeds(fixed, keep_selection=new_sel)
+        if fixed != seeds and len(fixed) < len(seeds):
+            self.say(f"{len(seeds) - len(fixed)} outline(s) drawn over were removed")
+        return new_sel
 
     def _apply_seeds(self, seeds, redraw=False):
         self.ann["seeds"] = seeds
@@ -598,9 +616,8 @@ class LabelPage(QWidget):
 
         def add(poly):
             seeds = self.ann["seeds"] + [{"polygon": poly, "status": "manual"}]
-            self.sam_active = {"index": len(seeds) - 1, "box": box, "points": [], "labels": []}
-            self._edited(seeds)
-            self.canvas.set_seeds(seeds, keep_selection=len(seeds) - 1)
+            i = self._edited(seeds, select=len(seeds) - 1)
+            self.sam_active = {"index": i, "box": box, "points": [], "labels": []}
 
         self._sam_run(box, None, None, add)
 
@@ -612,9 +629,8 @@ class LabelPage(QWidget):
 
             def add(poly):
                 seeds = self.ann["seeds"] + [{"polygon": poly, "status": "manual"}]
-                self.sam_active = {"index": len(seeds) - 1, "box": None, "points": [(x, y)], "labels": [1]}
-                self._edited(seeds)
-                self.canvas.set_seeds(seeds, keep_selection=len(seeds) - 1)
+                i = self._edited(seeds, select=len(seeds) - 1)
+                self.sam_active = {"index": i, "box": None, "points": [(x, y)], "labels": [1]}
 
             return self._sam_run(None, [(x, y)], [1], add)
         pts, labs = a["points"] + [(x, y)], a["labels"] + [1 if positive else 0]
@@ -626,8 +642,7 @@ class LabelPage(QWidget):
             status = seeds[a["index"]]["status"]
             seeds[a["index"]] = {"polygon": poly, "status": "edited" if status == "auto" else status}
             a["points"], a["labels"] = pts, labs
-            self._edited(seeds)
-            self.canvas.set_seeds(seeds, keep_selection=a["index"])
+            a["index"] = self._edited(seeds, select=a["index"])
 
         self._sam_run(a["box"], pts, labs, replace)
 
@@ -642,9 +657,8 @@ class LabelPage(QWidget):
             seeds = [dict(s) for s in self.ann["seeds"]]
             status = seeds[i]["status"]
             seeds[i] = {"polygon": poly, "status": "edited" if status == "auto" else status}
-            self.sam_active = {"index": i, "box": box, "points": [centre], "labels": [1]}
-            self._edited(seeds)
-            self.canvas.set_seeds(seeds, keep_selection=i)
+            j = self._edited(seeds, select=i)
+            self.sam_active = {"index": j, "box": box, "points": [centre], "labels": [1]}
 
         self._sam_preload()
         self._sam_run(box, [centre], [1], replace)
@@ -663,7 +677,7 @@ class LabelPage(QWidget):
             if self.ann["seeds"] != before:
                 return self.say("sam refine skipped: the outlines changed while it ran (use REFINE ALL to redo)")
             self._edited(seeds)
-            self.canvas.set_seeds(seeds)
+            self.canvas.set_seeds(self.ann["seeds"])
             self.say(f"sam redrew {n} of {len(seeds)} outlines")
 
         self.run_task(sam.refine_all, st.sam_model, o, before, h, res, done=done, msg="sam refining outlines")

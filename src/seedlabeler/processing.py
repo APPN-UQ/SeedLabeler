@@ -73,6 +73,79 @@ def polygons_to_labels(polys, shape):
     return labels
 
 
+_RANK = {"manual": 2, "edited": 1}  # whose outline wins a shared pixel (auto: 0)
+
+
+def resolve_overlaps(seeds, shape, epsilon=1.0, protect=None):
+    """Make outlines disjoint: seen from above, two seeds can't share a pixel.
+
+    A shared pixel goes to the protected seed (the one being edited, if any),
+    then to hand-drawn over edited over automatic outlines, then to the seed
+    whose centre is nearest. Seeds that lose more than a couple of pixels are
+    re-traced; a seed left with almost nothing (another outline was drawn over
+    it) is removed. Returns (seeds, kept) where kept[j] is the input index of
+    output seed j, so a selection can follow its seed.
+    """
+    n = len(seeds)
+    if n < 2:
+        return list(seeds), list(range(n))
+    H, W = shape
+    boxes, masks = [], []
+    count = np.zeros(shape, np.uint16)
+    for s in seeds:
+        p = np.round(np.asarray(s["polygon"], float)).astype(np.int32).reshape(-1, 2)
+        x0, y0 = max(int(p[:, 0].min()), 0), max(int(p[:, 1].min()), 0)
+        x1, y1 = min(int(p[:, 0].max()) + 1, W), min(int(p[:, 1].max()) + 1, H)
+        if x1 <= x0 or y1 <= y0:  # outside the image: nothing to share
+            boxes.append(None)
+            masks.append(None)
+            continue
+        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(m, [p - [x0, y0]], 1)
+        boxes.append((x0, y0, x1, y1))
+        masks.append(m.astype(bool))
+        count[y0:y1, x0:x1] += m
+    if count.max() <= 1:
+        return list(seeds), list(range(n))
+
+    best = np.full(shape, -np.inf, np.float32)
+    owner = np.full(shape, -1, np.int32)
+    for i, (s, b, m) in enumerate(zip(seeds, boxes, masks)):
+        if m is None or not m.any():
+            continue
+        x0, y0, x1, y1 = b
+        ys, xs = np.nonzero(m)
+        yy, xx = np.mgrid[0:m.shape[0], 0:m.shape[1]]
+        rank = 10 if i == protect else _RANK.get(s.get("status"), 0)
+        score = rank * 1e6 - np.hypot(yy - ys.mean(), xx - xs.mean())
+        sub_b, sub_o = best[y0:y1, x0:x1], owner[y0:y1, x0:x1]  # views: written in place
+        win = m & (score > sub_b)
+        sub_b[win] = score[win]
+        sub_o[win] = i
+
+    out, kept = [], []
+    for i, (s, b, m) in enumerate(zip(seeds, boxes, masks)):
+        if m is None:
+            out.append(s)
+            kept.append(i)
+            continue
+        x0, y0, x1, y1 = b
+        mine = m & (owner[y0:y1, x0:x1] == i)
+        if m.sum() - mine.sum() <= 2:  # a pixel or two along a shared edge: leave the outline be
+            out.append(s)
+            kept.append(i)
+            continue
+        if mine.sum() < 3:
+            continue  # drawn over by another outline
+        cs, _ = cv2.findContours(mine.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        c = cv2.approxPolyDP(max(cs, key=cv2.contourArea), epsilon, True).reshape(-1, 2)
+        if len(c) < 3 or cv2.contourArea(c.astype(np.float32)) < 1:
+            continue
+        out.append({**s, "polygon": (c + [x0, y0]).astype(float).tolist()})
+        kept.append(i)
+    return out, kept
+
+
 # --- detection -------------------------------------------------------------
 def rgbd_xyz(depth_mm, K):
     """Depth image (mm, 0 = unknown) -> (h, w, 3) points in the colour camera frame, NaN where unknown."""

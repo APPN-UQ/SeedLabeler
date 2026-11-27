@@ -240,4 +240,7 @@ def refine_all(model_name, ortho, seeds, height=None, res=None, min_iou=0.6, gro
         if poly is not None:
             out[i] = {**seeds[i], "polygon": poly.tolist(), "sam": True}
             replaced += 1
+    # each outline was drawn on its own, so neighbours can claim the same pixels: split them
+    from .processing import resolve_overlaps
+    out, _ = resolve_overlaps(out, ortho.shape[:2], epsilon=max(1.0, 0.2 / res) if res else 1.0)
     return out, replaced
