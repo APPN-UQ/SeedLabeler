@@ -6,6 +6,8 @@ Delete removes the seed. Box (SAM): drag a box or click a seed. Wheel zooms,
 middle drag or Space+drag pans, F fits the view. Each seed is filled with its
 own palette colour.
 """
+import time
+
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
@@ -50,6 +52,9 @@ class VertexHandle(QGraphicsRectItem):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
+            # Windows sends the context menu on release, to whatever seed is then under the
+            # cursor: a vertex removal must not also open the label menu
+            self.seed_item.canvas._no_menu_until = time.monotonic() + 1.0
             self.seed_item.remove_vertex(self.index)
         elif e.button() == Qt.LeftButton:
             self._dragging = True
@@ -178,6 +183,10 @@ class SeedItem(QGraphicsPolygonItem):
     def contextMenuEvent(self, e):
         if self.canvas.mode != "select":
             return
+        if time.monotonic() < self.canvas._no_menu_until:  # this right-click removed a vertex
+            self.canvas._no_menu_until = 0.0
+            e.accept()
+            return
         idx = self.canvas.items_.index(self)
         menu = QMenu()
         for lbl in self.canvas.seed_labels:
@@ -215,6 +224,7 @@ class Canvas(QGraphicsView):
         self.guide_item = None
         self.items_ = []
         self.seed_labels = list(SEED_LABELS)
+        self._no_menu_until = 0.0  # see VertexHandle.mousePressEvent
         self._seed_opacity = 0.05  # a faint fill: the outline carries the shape, the seed stays visible
         self.mode = "select"
         self._panning = None

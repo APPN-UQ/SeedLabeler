@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QSlider, QSpinBox,
@@ -89,15 +89,23 @@ class LabelPage(QWidget):
         # centre: tools + canvas
         centre = QVBoxLayout()
         tools = QHBoxLayout()
-        self.b_select = button("select", lambda: self._set_mode("select"), checkable=True)
-        self.b_box = button("box", lambda: self._set_mode("box"), checkable=True,
+        self.b_select = button("select (s)", lambda: self._set_mode("select"), checkable=True,
+                               tip="Select, move and reshape outlines (S)")
+        self.b_box = button("box (b)", lambda: self._set_mode("box"), checkable=True,
                             tip="SAM: drag a box around a seed, or click a seed.\n"
                                 "Then click to include more, Shift/right-click to exclude.")
         self.b_select.setChecked(True)
         self.b_samfix = button("sam fix", self.sam_resegment, tip="Redraw the selected seed with SAM (R)")
         self.b_delete = button("delete", lambda: self.canvas.delete_selected())
-        self.b_undo = button("undo", self.do_undo)
-        self.b_redo = button("redo", self.do_redo)
+        self.b_undo = button("undo", self.do_undo, tip="Undo (Ctrl+Z)")
+        self.b_redo = button("redo", self.do_redo, tip="Redo (Ctrl+Y or Ctrl+Shift+Z)")
+        # Single letters don't fire while typing in the sample-ID box (text fields keep their keys)
+        for keys, fn, btn in (("S", lambda: self._set_mode("select"), self.b_select),
+                              ("B", lambda: self._set_mode("box"), self.b_box),
+                              ("Ctrl+Z", self.do_undo, self.b_undo),
+                              ("Ctrl+Y", self.do_redo, self.b_redo),
+                              ("Ctrl+Shift+Z", self.do_redo, self.b_redo)):
+            QShortcut(QKeySequence(keys), self, activated=lambda f=fn, b=btn: b.isEnabled() and f())
         self.b_view = button("depth map", self.toggle_view, checkable=True)
         self.b_fit = button("fit", lambda: self.canvas.fit())
         self.b_live = button("live", self.toggle_live, checkable=True,
@@ -265,6 +273,14 @@ class LabelPage(QWidget):
         if self.sample and self.sample.processed:
             self.layers = processing.load_layers(self.sample)
             self.ann = self.sample.annotations()
+            res = self.sample.meta().get("res")
+            fixed, _ = processing.resolve_overlaps(self.ann["seeds"], self.layers[0].shape[:2],
+                                                   epsilon=max(1.0, 0.2 / res) if res else 1.0)
+            if fixed != self.ann["seeds"]:  # outlines saved before overlaps were resolved
+                self.ann["seeds"] = fixed
+                self.sample.save_annotations(self.ann)
+                self._remeasure_timer.start()
+                self.say(f"{self.sample.id}: overlapping outlines separated")
             self.b_view.setChecked(False)
             self.b_view.setText("DEPTH MAP")
             self.canvas.set_image(self.layers[0])
