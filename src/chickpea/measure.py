@@ -14,10 +14,13 @@ from .segment import to_lab
 
 def _feret(coords):
     """Max and min caliper (Feret) widths of a point set (pixels), via its convex hull."""
-    from scipy.spatial import ConvexHull
+    from scipy.spatial import ConvexHull, QhullError
     if len(coords) < 3:
         return 0.0, 0.0
-    hull = coords[ConvexHull(coords).vertices]
+    try:
+        hull = coords[ConvexHull(coords).vertices]
+    except QhullError:  # all on one line (a 1-pixel sliver): no hull, but the points give the same widths
+        hull = coords
     angles = np.deg2rad(np.arange(0, 180, 0.5))
     proj = hull @ np.stack([np.cos(angles), np.sin(angles)])
     widths = proj.max(axis=0) - proj.min(axis=0)

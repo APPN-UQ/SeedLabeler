@@ -122,6 +122,15 @@ def measure_rgbd(full, K_full, xyz, K_xyz, stage=None, res=None, split=True, min
     if trim_shadows:
         labels, trimmed_mm2 = trim_flat(labels, ortho_h, grid.res, ortho)
         seg_info = {**seg_info, "shadow_trimmed_mm2": round(trimmed_mm2, 1)}
+    # 3) Fragments: below the smallest seed area, e.g. what's left of a model outline that
+    #    overlapped a neighbour, or a sliver after shadow trimming. Not seeds.
+    if min_area_mm2:
+        ids, counts = np.unique(labels[labels > 0], return_counts=True)
+        small = ids[counts * grid.res ** 2 < min_area_mm2]
+        if len(small):
+            labels[np.isin(labels, small)] = 0
+            labels, _, _ = segmentation.relabel_sequential(labels)
+        seg_info = {**seg_info, "fragments_dropped": int(len(small))}
     rows = measure_seeds(labels, ortho, ortho_h, grid.res, stage.d,
                          pixel_offset=(grid.a0 / grid.res, grid.b0 / grid.res))
     seg_info = {**seg_info, "rejected_not_raised": len(rejected)}
